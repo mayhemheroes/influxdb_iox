@@ -11,6 +11,7 @@ members = [
     "datafusion",
     "datafusion_util",
     "dml",
+    "event_emitter",
     "executor",
     "generated_types",
     "grpc-binary-logger-proto",

@@ -1,0 +1,19 @@
+[package]
+name = "event_emitter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.57"
+backoff ={ path = "../backoff"}
+influxdb_iox_client ={ path = "../influxdb_iox_client"}
+influxdb_line_protocol ={ path = "../influxdb_line_protocol"}
+observability_deps = { path = "../observability_deps" }
+snafu = "0.7"
+iox_time = { path = "../iox_time" }
+parking_lot = "0.12"
+tokio = { version = "1.20", features = ["macros", "parking_lot", "rt-multi-thread", "sync", "time"] }
+workspace-hack = { path = "../workspace-hack"}
+
+[dev-dependencies]
+rand = "0.8.3"

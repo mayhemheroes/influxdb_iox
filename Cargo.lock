@@ -1308,6 +1308,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
+name = "event_emitter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "backoff",
+ "influxdb_iox_client",
+ "influxdb_line_protocol",
+ "iox_time",
+ "observability_deps",
+ "parking_lot 0.12.1",
+ "rand",
+ "snafu",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "executor"
 version = "0.1.0"
 dependencies = [
