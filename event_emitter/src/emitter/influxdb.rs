@@ -98,7 +98,15 @@ impl EventEmitter for InfluxDBEventEmitter {
                     let mut client = client.lock().await;
                     match client.write_lp(&db_name, lp, 0).await {
                         Ok(_) => ControlFlow::Break(Ok(())),
-                        Err(e @ ClientError::Aborted(_)) => ControlFlow::Continue(e),
+                        Err(
+                            e @ (ClientError::Aborted(_)
+                            | ClientError::Cancelled(_)
+                            | ClientError::DeadlineExceeded(_)
+                            | ClientError::Internal(_)
+                            | ClientError::InvalidResponse(_)
+                            | ClientError::ResourceExhausted(_)
+                            | ClientError::Unknown(_)),
+                        ) => ControlFlow::Continue(e),
                         Err(e) => ControlFlow::Break(Err(e)),
                     }
                 }
