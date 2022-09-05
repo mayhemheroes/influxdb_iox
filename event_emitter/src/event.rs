@@ -1,7 +1,7 @@
 //! Event handling.
 use std::{
     borrow::Cow,
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{hash_map::Entry, HashMap},
 };
 
 use iox_time::Time;
@@ -71,8 +71,8 @@ where
 {
     measurement: M,
     time: Time,
-    tags: BTreeMap<&'static str, Cow<'static, str>>,
-    fields: BTreeMap<&'static str, FieldValue>,
+    tags: HashMap<&'static str, Cow<'static, str>>,
+    fields: HashMap<&'static str, FieldValue>,
 }
 
 impl<M> Event<M>
@@ -84,8 +84,8 @@ where
         Self {
             measurement,
             time,
-            tags: BTreeMap::default(),
-            fields: BTreeMap::default(),
+            tags: HashMap::default(),
+            fields: HashMap::default(),
         }
     }
 
@@ -101,14 +101,14 @@ where
 
     /// Get all tags.
     ///
-    /// The iterator elements are sorted by tag name.
+    /// The order of the elements is undefined!
     pub fn tags(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.tags.iter().map(|(k, v)| (*k, v.as_ref()))
     }
 
     /// Get all fields.
     ///
-    /// The iterator elements are sorted by field name.
+    /// The order of the elements is undefined!
     pub fn fields(&self) -> impl Iterator<Item = (&'static str, &FieldValue)> {
         self.fields.iter().map(|(k, v)| (*k, v))
     }
@@ -231,8 +231,6 @@ impl Event<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
-
     use crate::measurement;
 
     use super::*;
@@ -285,41 +283,5 @@ mod tests {
         Event::new(TestM::default(), Time::MIN)
             .with_field("foo", 1u64)
             .with_tag("foo", "1");
-    }
-
-    #[test]
-    fn test_tags_iter_sorted() {
-        let mut tags: Vec<_> = (0..100).map(|i| format!("tag_{i}")).collect();
-        let mut rng = StdRng::seed_from_u64(1234);
-        tags.shuffle(&mut rng);
-
-        let mut event = Event::new("foo", Time::MIN);
-        for tag in &tags {
-            let tag = Box::from(tag.clone());
-            let tag = Box::leak(tag);
-            event.add_tag(tag, "bar");
-        }
-
-        tags.sort();
-        let actual: Vec<_> = event.tags().map(|(t, _)| t.to_owned()).collect();
-        assert_eq!(actual, tags);
-    }
-
-    #[test]
-    fn test_fields_iter_sorted() {
-        let mut fields: Vec<_> = (0..100).map(|i| format!("field_{i}")).collect();
-        let mut rng = StdRng::seed_from_u64(1234);
-        fields.shuffle(&mut rng);
-
-        let mut event = Event::new("foo", Time::MIN);
-        for field in &fields {
-            let tag = Box::from(field.clone());
-            let tag = Box::leak(tag);
-            event.add_field(tag, 1u64);
-        }
-
-        fields.sort();
-        let actual: Vec<_> = event.fields().map(|(t, _)| t.to_owned()).collect();
-        assert_eq!(actual, fields);
     }
 }
