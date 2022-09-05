@@ -18,6 +18,12 @@ use crate::{
     measurement::TypedMeasurement,
 };
 
+/// Event buffer size in "number of events".
+///
+/// This limits the number of events that are kept in memory. The [`EventEmitter`] should emit them as quickly as
+/// possible and when the buffer is full, new events will be dropped.
+const BUFFER_SIZE: usize = 1_000;
+
 /// Internal message from [`EventDriver`]/[`EventRecorder`] to its background worker.
 #[derive(Debug)]
 enum Message {
@@ -45,7 +51,7 @@ impl EventDriver {
         time_provider: Arc<dyn TimeProvider>,
         handle: &Handle,
     ) -> Self {
-        let (tx, mut rx) = channel(1_000);
+        let (tx, mut rx) = channel(BUFFER_SIZE);
         let join_handle = handle.spawn(async move {
             while let Some(msg) = rx.recv().await {
                 match msg {
