@@ -150,7 +150,7 @@ where
             match self.tx.try_send(Message::Event(event.untyped())) {
                 Ok(()) => {}
                 Err(TrySendError::Closed(_)) => {
-                    panic!("Background worker died");
+                    warn!("Background worker died");
                 }
                 Err(TrySendError::Full(_)) => {
                     warn!("Event buffer full");
