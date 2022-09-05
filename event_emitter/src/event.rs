@@ -9,7 +9,7 @@ use iox_time::Time;
 use crate::measurement::TypedMeasurement;
 
 /// Value type for [`Event`] fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     /// Signed integer.
     I64(i64),
@@ -26,21 +26,6 @@ pub enum FieldValue {
     /// String.
     String(Cow<'static, str>),
 }
-
-impl PartialEq for FieldValue {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::I64(l0), Self::I64(r0)) => l0 == r0,
-            (Self::U64(l0), Self::U64(r0)) => l0 == r0,
-            (Self::F64(l0), Self::F64(r0)) => l0 == r0,
-            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
-            (Self::String(l0), Self::String(r0)) => l0 == r0,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for FieldValue {}
 
 impl From<i64> for FieldValue {
     fn from(v: i64) -> Self {
@@ -79,7 +64,7 @@ impl From<String> for FieldValue {
 }
 
 /// Typed InfluxDB-style event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event<M>
 where
     M: Into<&'static str>,
