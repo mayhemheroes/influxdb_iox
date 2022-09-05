@@ -82,7 +82,6 @@ impl EventDriver {
 
         EventRecorder {
             event: Some(event.typed()),
-            do_not_send: false,
             tx: Arc::clone(&self.tx),
         }
     }
@@ -109,7 +108,6 @@ where
     M: TypedMeasurement,
 {
     event: Option<Event<M>>,
-    do_not_send: bool,
     tx: Arc<Sender<Message>>,
 }
 
@@ -119,7 +117,7 @@ where
 {
     /// Do NOT send this event.
     pub fn do_not_send(mut self) {
-        self.do_not_send = true;
+        self.event.take();
     }
 }
 
@@ -148,9 +146,8 @@ where
     M: TypedMeasurement,
 {
     fn drop(&mut self) {
-        if !self.do_not_send {
-            let event = self.event.take().expect("not yet dropped").untyped();
-            match self.tx.try_send(Message::Event(event)) {
+        if let Some(event) = self.event.take() {
+            match self.tx.try_send(Message::Event(event.untyped())) {
                 Ok(()) => {}
                 Err(TrySendError::Closed(_)) => {
                     panic!("Background worker died");
