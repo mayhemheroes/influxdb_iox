@@ -62,14 +62,14 @@ mod tests {
     #[tokio::test]
     async fn test() {
         let e1 = Event::new("m1", Time::from_timestamp_nanos(1))
-            .add_tag_move("foo", "bar")
-            .add_field_move("i", 1u64);
+            .with_tag("foo", "bar")
+            .with_field("i", 1u64);
         let e2 = Event::new("m1", Time::from_timestamp_nanos(1))
-            .add_tag_move("foo", "x")
-            .add_field_move("i", 2u64);
+            .with_tag("foo", "x")
+            .with_field("i", 2u64);
         let e3 = Event::new("m2", Time::from_timestamp_nanos(2))
-            .add_tag_move("hello", "world")
-            .add_field_move("j", 1u64);
+            .with_tag("hello", "world")
+            .with_field("j", 1u64);
 
         let (mut emitter, receiver) = TestEventEmitter::create();
         assert_eq!(receiver.read(), vec![]);

@@ -179,19 +179,19 @@ mod tests {
         let (emitter, receiver) = TestEventEmitter::create();
         let driver = EventDriver::new(
             vec![Box::new(FunctionEventDataProvider::new(|e| {
-                e.add_tag_mut("foo", "bar");
+                e.add_tag("foo", "bar");
             }))],
             Box::new(emitter),
             Arc::new(MockProvider::new(Time::MIN)),
             &Handle::current(),
         );
-        driver.record::<TestM>().add_tag_mut("my_tag", "xxx");
+        driver.record::<TestM>().add_tag("my_tag", "xxx");
 
         driver.flush().await;
 
         let expected = Event::new("m", Time::MIN)
-            .add_tag_move("foo", "bar")
-            .add_tag_move("my_tag", "xxx");
+            .with_tag("foo", "bar")
+            .with_tag("my_tag", "xxx");
         assert_eq!(receiver.read(), vec![expected]);
     }
 

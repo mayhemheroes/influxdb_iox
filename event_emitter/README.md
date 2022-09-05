@@ -56,9 +56,9 @@ let driver = EventDriver::new(
 );
 
 // record event
-driver.record::<RequestMeasurement>()
-    .add_tag_mut("method", "GET")
-    .add_tag_mut("path", "/query")
-    .add_field_mut("request_size_bytes", 1024u64);
+let mut evt = driver.record::<RequestMeasurement>();
+evt.add_tag("method", "GET");
+evt.add_tag("path", "/query");
+evt.add_field("request_size_bytes", 1024u64);
 # }
 ```

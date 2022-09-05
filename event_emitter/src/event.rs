@@ -117,7 +117,7 @@ where
     ///
     /// # Panic
     /// Panics if a tag or a field with the same name already exists. Also panics if a tag called `"time"` is used.
-    pub fn add_tag_mut<V>(&mut self, name: &'static str, value: V) -> &mut Self
+    pub fn add_tag<V>(&mut self, name: &'static str, value: V)
     where
         V: Into<Cow<'static, str>>,
     {
@@ -139,19 +139,17 @@ where
                 panic!("Tag '{name}' already used.")
             }
         }
-
-        self
     }
 
     /// Add new tag.
     ///
     /// # Panic
     /// Panics if a tag or a field with the same name already exists. Also panics if a tag called `"time"` is used.
-    pub fn add_tag_move<V>(mut self, name: &'static str, value: V) -> Self
+    pub fn with_tag<V>(mut self, name: &'static str, value: V) -> Self
     where
         V: Into<Cow<'static, str>>,
     {
-        self.add_tag_mut(name, value);
+        self.add_tag(name, value);
         self
     }
 
@@ -159,7 +157,7 @@ where
     ///
     /// # Panic
     /// Panics if a tag or a field with the same name already exists. Also panics if a field called `"time"` is used.
-    pub fn add_field_mut<V>(&mut self, name: &'static str, value: V) -> &mut Self
+    pub fn add_field<V>(&mut self, name: &'static str, value: V)
     where
         V: Into<FieldValue>,
     {
@@ -181,19 +179,17 @@ where
                 panic!("Field '{name}' already used.")
             }
         }
-
-        self
     }
 
     /// Add a new field.
     ///
     /// # Panic
     /// Panics if a tag or a field with the same name already exists. Also panics if a field called `"time"` is used.
-    pub fn add_field_move<V>(mut self, name: &'static str, value: V) -> Self
+    pub fn with_field<V>(mut self, name: &'static str, value: V) -> Self
     where
         V: Into<FieldValue>,
     {
-        self.add_field_mut(name, value);
+        self.add_field(name, value);
         self
     }
 }
@@ -246,29 +242,29 @@ mod tests {
     #[test]
     #[should_panic(expected = "Cannot use a tag called 'time'")]
     fn test_check_tag_time() {
-        Event::new(TestM::default(), Time::MIN).add_tag_move("time", "1");
+        Event::new(TestM::default(), Time::MIN).with_tag("time", "1");
     }
 
     #[test]
     #[should_panic(expected = "Tag 'foo' already used.")]
     fn test_check_tag_override() {
         Event::new(TestM::default(), Time::MIN)
-            .add_tag_move("foo", "1")
-            .add_tag_move("foo", "1");
+            .with_tag("foo", "1")
+            .with_tag("foo", "1");
     }
 
     #[test]
     #[should_panic(expected = "Cannot use a field called 'time'")]
     fn test_check_field_time() {
-        Event::new(TestM::default(), Time::MIN).add_field_move("time", 1u64);
+        Event::new(TestM::default(), Time::MIN).with_field("time", 1u64);
     }
 
     #[test]
     #[should_panic(expected = "Field 'foo' already used.")]
     fn test_check_field_override() {
         Event::new(TestM::default(), Time::MIN)
-            .add_field_move("foo", 1u64)
-            .add_field_move("foo", 1u64);
+            .with_field("foo", 1u64)
+            .with_field("foo", 1u64);
     }
 
     #[test]
@@ -277,8 +273,8 @@ mod tests {
     )]
     fn test_check_tag_field_collision() {
         Event::new(TestM::default(), Time::MIN)
-            .add_tag_move("foo", "1")
-            .add_field_move("foo", 1u64);
+            .with_tag("foo", "1")
+            .with_field("foo", 1u64);
     }
 
     #[test]
@@ -287,8 +283,8 @@ mod tests {
     )]
     fn test_check_field_tag_collision() {
         Event::new(TestM::default(), Time::MIN)
-            .add_field_move("foo", 1u64)
-            .add_tag_move("foo", "1");
+            .with_field("foo", 1u64)
+            .with_tag("foo", "1");
     }
 
     #[test]
@@ -301,7 +297,7 @@ mod tests {
         for tag in &tags {
             let tag = Box::from(tag.clone());
             let tag = Box::leak(tag);
-            event.add_tag_mut(tag, "bar");
+            event.add_tag(tag, "bar");
         }
 
         tags.sort();
@@ -319,7 +315,7 @@ mod tests {
         for field in &fields {
             let tag = Box::from(field.clone());
             let tag = Box::leak(tag);
-            event.add_field_mut(tag, 1u64);
+            event.add_field(tag, 1u64);
         }
 
         fields.sort();

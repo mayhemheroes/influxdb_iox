@@ -32,9 +32,9 @@ impl ProcessEventDataProvider {
 
 impl EventDataProvider for ProcessEventDataProvider {
     fn enrich(&self, event: &mut Event<&'static str>) {
-        event.add_tag_mut("process_git_hash", self.git_hash);
-        event.add_tag_mut("process_uuid", self.process_uuid);
-        event.add_field_mut(
+        event.add_tag("process_git_hash", self.git_hash);
+        event.add_tag("process_uuid", self.process_uuid);
+        event.add_field(
             "process_uptime_seconds",
             (event.time() - self.t_start).as_secs_f64(),
         );
@@ -56,9 +56,9 @@ mod tests {
         let mut e = Event::new("m", Time::from_timestamp_millis(1200));
         provider.enrich(&mut e);
         let expected = Event::new("m", Time::from_timestamp_millis(1200))
-            .add_tag_move("process_git_hash", "foo_githash")
-            .add_tag_move("process_uuid", "bar_processuuid")
-            .add_field_move("process_uptime_seconds", 1.2f64);
+            .with_tag("process_git_hash", "foo_githash")
+            .with_tag("process_uuid", "bar_processuuid")
+            .with_field("process_uptime_seconds", 1.2f64);
         assert_eq!(e, expected);
     }
 }

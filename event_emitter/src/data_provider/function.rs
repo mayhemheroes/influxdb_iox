@@ -46,12 +46,12 @@ mod tests {
     #[test]
     fn test() {
         let provider = FunctionEventDataProvider::new(|event| {
-            event.add_tag_mut("foo", "bar");
+            event.add_tag("foo", "bar");
         });
 
         let mut event = Event::new("m", Time::from_timestamp_nanos(0));
 
-        let expected = event.clone().add_tag_move("foo", "bar");
+        let expected = event.clone().with_tag("foo", "bar");
         provider.enrich(&mut event);
         assert_eq!(event, expected);
     }
