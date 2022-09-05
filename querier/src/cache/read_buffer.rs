@@ -179,11 +179,7 @@ fn record_batches_stream(
     store: ParquetStorage,
 ) -> Result<SendableRecordBatchStream, parquet_file::storage::ReadError> {
     let path: ParquetFilePath = parquet_file.into();
-    store.read_all(
-        schema.as_arrow(),
-        &path,
-        parquet_file.file_size_bytes as usize,
-    )
+    store.read_all(schema.as_arrow(), &path)
 }
 
 #[derive(Debug, Snafu)]
