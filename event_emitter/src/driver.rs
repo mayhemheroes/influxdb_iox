@@ -92,7 +92,8 @@ impl EventDriver {
         }
     }
 
-    /// Flushes queued events.
+    /// Flushes queued events. Resolves after all events recorded prior
+    /// to this call are emitted.
     ///
     /// Events that are recorded (via [`EventRecorder::drop`]) AFTER calling this function are NOT flushed.
     pub async fn flush(&self) {
