@@ -33,8 +33,8 @@ impl TestEventEmitter {
 
 #[async_trait]
 impl EventEmitter for TestEventEmitter {
-    async fn emit(&mut self, mut events: Vec<Event<&'static str>>) {
-        self.events.lock().append(&mut events);
+    async fn emit(&mut self, event: Event<&'static str>) {
+        self.events.lock().push(event);
     }
 }
 
@@ -74,12 +74,13 @@ mod tests {
         let (mut emitter, receiver) = TestEventEmitter::create();
         assert_eq!(receiver.read(), vec![]);
 
-        emitter.emit(vec![e1.clone(), e2.clone()]).await;
-        emitter.emit(vec![]).await;
-        emitter.emit(vec![e1.clone(), e3.clone()]).await;
+        emitter.emit(e1.clone()).await;
+        emitter.emit(e2.clone()).await;
+        emitter.emit(e2.clone()).await;
+        emitter.emit(e3.clone()).await;
         assert_eq!(
             receiver.read(),
-            vec![e1.clone(), e2.clone(), e1.clone(), e3.clone()]
+            vec![e1.clone(), e2.clone(), e2.clone(), e3.clone()]
         );
     }
 }

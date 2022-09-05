@@ -10,9 +10,9 @@ pub mod testing;
 /// Emit emitter interface.
 #[async_trait]
 pub trait EventEmitter: Debug + Send + 'static {
-    /// Emit given batch of events.
+    /// Emit given event.
     ///
     /// This method cannot fail. Retries must be handled by the emitter. If the emission fails, the event will be
     /// dropped (although the emitter is encouraged to issue a warning-level log in this case).
-    async fn emit(&mut self, events: Vec<Event<&'static str>>);
+    async fn emit(&mut self, event: Event<&'static str>);
 }

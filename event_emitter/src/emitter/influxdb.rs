@@ -55,38 +55,34 @@ impl InfluxDBEventEmitter {
 
 #[async_trait]
 impl EventEmitter for InfluxDBEventEmitter {
-    async fn emit(&mut self, events: Vec<Event<&'static str>>) {
-        let mut builder = LineProtocolBuilder::new();
-        for event in events {
-            if event.fields().next().is_none() {
-                debug!("Ignoring event w/o fields");
-                continue;
-            }
-
-            let mut builder_inner = builder.measurement(*event.measurement());
-
-            for (k, v) in event.tags() {
-                builder_inner = builder_inner.tag(k, v);
-            }
-            let mut field_it = event.fields();
-
-            let mut builder_inner = match field_it.next() {
-                Some((k, v)) => builder_inner.field(k, v),
-                None => {
-                    panic!("Just checked that there is at least 1 field");
-                }
-            };
-
-            for (k, v) in field_it {
-                builder_inner = builder_inner.field(k, v);
-            }
-
-            let builder_inner = builder_inner.timestamp(event.time().timestamp_nanos());
-
-            builder = builder_inner.close_line();
+    async fn emit(&mut self, event: Event<&'static str>) {
+        let builder = LineProtocolBuilder::new();
+        if event.fields().next().is_none() {
+            debug!("Ignoring event w/o fields");
         }
 
-        let lp = builder.build();
+        let mut builder = builder.measurement(*event.measurement());
+
+        for (k, v) in event.tags() {
+            builder = builder.tag(k, v);
+        }
+        let mut field_it = event.fields();
+
+        let mut builder = match field_it.next() {
+            Some((k, v)) => builder.field(k, v),
+            None => {
+                panic!("Just checked that there is at least 1 field");
+            }
+        };
+
+        for (k, v) in field_it {
+            builder = builder.field(k, v);
+        }
+
+        let lp = builder
+            .timestamp(event.time().timestamp_nanos())
+            .close_line()
+            .build();
         let lp = Arc::from(String::from_utf8(lp).expect("LP builder produces valid string"));
 
         let res = Backoff::new(&self.backoff_config)

@@ -56,8 +56,7 @@ impl EventDriver {
             while let Some(msg) = rx.recv().await {
                 match msg {
                     Message::Event(event) => {
-                        // TODO: batch events
-                        emitter.emit(vec![event]).await;
+                        emitter.emit(event).await;
                     }
                     Message::Flush(flush_tx) => {
                         // We do NOT care if the receiver is gone (e.g. because the flush method was cancelled).
