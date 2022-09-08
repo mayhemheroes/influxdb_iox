@@ -164,8 +164,11 @@ impl ParquetFileWithTombstone {
 /// time range [min_time, max_time] contains.
 /// The split times assume that the data is evenly distributed in the time range and if
 /// that is not the case the resulting files are not guaranteed to be below max_desired_file_size
-/// Hence, the range between two contiguous returned time is percentage of
-/// max_desired_file_size/total_size of the time range
+/// Once the desired split count is computed, the time range will be divided evenly among those splits.
+/// Hence, the range between two contiguous returned times is the percentage of
+/// total_size/split_count of the time range.
+/// If a split is found to have no chunks within it, the split count is incremented with the intent of
+/// returning the desired number of splits.
 /// Example:
 ///  . Input
 ///      min_time = 1
@@ -173,13 +176,14 @@ impl ParquetFileWithTombstone {
 ///      total_size = 100
 ///      max_desired_file_size = 30
 ///
-///  . Pecentage = 70/100 = 0.3
-///  . Time range between 2 times = (21 - 1) * 0.3 = 6
+///  . Split count = (100/30).ceil() = 4
+///  . Pecentage = 100/4 = 0.25
+///  . Time range between 2 split times = (21 - 1) * 0.25 = 5
 ///
-///  . Output = [7, 13, 19] in which
-///     7 = 1 (min_time) + 6 (time range)
-///     13 = 7 (previous time) + 6 (time range)
-///     19 = 13 (previous time) + 6 (time range)
+///  . Output = [6, 13, 19] in which
+///     6 = 1 (min_time) + 5 (time range)
+///     11 = 6 (previous time) + 5 (time range)
+///     16 = 11 (previous time) + 5 (time range)
 pub(crate) fn compute_split_time(
     chunk_times: Vec<TimestampMinMax>,
     min_time: i64,
@@ -197,18 +201,43 @@ pub(crate) fn compute_split_time(
         return vec![max_time];
     }
 
-    let mut split_times = vec![];
-    let percentage = max_desired_file_size as f64 / total_size as f64;
-    let mut min = min_time;
-    loop {
-        let split_time = min + ((max_time - min_time) as f64 * percentage).ceil() as i64;
+    // compute the minimum number of splits to keep the average split size under the max.
+    let min_split_count = (total_size as f64 / max_desired_file_size as f64).ceil() as i64;
 
-        if split_time >= max_time {
-            break;
-        } else if time_range_present(&chunk_times, min, split_time) {
-            split_times.push(split_time);
+    let mut split_count = min_split_count;
+    let mut split_times = vec![];
+
+    loop {
+        let percentage = 1.0 / split_count as f64;
+        let mut split_start = min_time;
+        let mut split_end = split_start + ((max_time - min_time) as f64 * percentage).ceil() as i64;
+        let mut skips = 0;
+
+        loop {
+            if split_end >= max_time {
+                break;
+            } else if time_range_present(&chunk_times, split_start, split_end) {
+                split_times.push(split_end);
+            } else {
+                // no chunks fall within this split, so we'll skip it.
+                skips += 1;
+                if min_split_count + skips > split_count {
+                    // we skipped too many, and won't return the desired number of splits, so start
+                    // over splitting into smaller time ranges.
+                    split_count += 1;
+                    split_times = vec![];
+                    break;
+                }
+            }
+            // update start/end to the next time range.
+            split_start = split_end;
+            split_end = split_start + ((max_time - min_time) as f64 * percentage).ceil() as i64;
         }
-        min = split_time;
+
+        if split_end >= max_time {
+            // The loop above ran to the end of the time range, rather than exiting early, so we're done.
+            break;
+        }
     }
 
     split_times
@@ -247,7 +276,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], max_time);
 
-        // split 70% and 30%
+        // max file size is 70% of total, but since its split into 2, it will split at 50%
         let max_desired_file_size = 70;
         let result = compute_split_time(
             chunk_times.clone(),
@@ -258,7 +287,7 @@ mod tests {
         );
         // only need to store the last split time
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], 8); // = 1 (min_time) + 7
+        assert_eq!(result[0], 6); // = 1 (min_time) + 5 (max_time - min_time)/2
 
         // split 40%, 40%, 20%
         let max_desired_file_size = 40;
@@ -271,8 +300,8 @@ mod tests {
         );
         // store first and second split time
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], 5); // = 1 (min_time) + 4
-        assert_eq!(result[1], 9); // = 5 (previous split_time) + 4
+        assert_eq!(result[0], 5); // = 1 (min_time) + 4 ( 3.33.ceil() )
+        assert_eq!(result[1], 9); // = 5 (previous split_time) + 4 (3.33.ceil() )
     }
 
     #[test]
@@ -348,8 +377,8 @@ mod tests {
         let total_size = 200;
         let max_desired_file_size = total_size / 3;
         let chunk_times = vec![
-            TimestampMinMax { min: 1, max: 24 },
-            TimestampMinMax { min: 75, max: 100 },
+            TimestampMinMax { min: 1, max: 19 },
+            TimestampMinMax { min: 81, max: 100 },
         ];
 
         let result = compute_split_time(
@@ -361,7 +390,7 @@ mod tests {
         );
 
         // must return vector of one, containing a Split T1 shown above.
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], 34);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], 18);
     }
 }
