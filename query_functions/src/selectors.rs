@@ -81,20 +81,20 @@ pub fn selector_first() -> Arc<AggregateUDF> {
         Arc::new(|return_type| {
             let value_type = get_value_datatype(return_type)?;
             let accumulator: Box<dyn Accumulator> = match value_type {
-            DataType::Float64 => Box::new(SelectorAccumulator::<F64FirstSelector>::new()),
-            DataType::Int64 => Box::new(SelectorAccumulator::<I64FirstSelector>::new()),
-            DataType::UInt64 => Box::new(SelectorAccumulator::<U64FirstSelector>::new()),
-            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8FirstSelector>::new()),
-            DataType::Boolean => {
-                Box::new(SelectorAccumulator::<BooleanFirstSelector>::new())
-            }
-            t => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
-                    t
-                )))
-            }
-        };
+                DataType::Float64 => Box::new(SelectorAccumulator::<F64FirstSelector>::new()),
+                DataType::Int64 => Box::new(SelectorAccumulator::<I64FirstSelector>::new()),
+                DataType::UInt64 => Box::new(SelectorAccumulator::<U64FirstSelector>::new()),
+                DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8FirstSelector>::new()),
+                DataType::Boolean => {
+                    Box::new(SelectorAccumulator::<BooleanFirstSelector>::new())
+                }
+                t => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                        t
+                    )))
+                }
+            };
             Ok(accumulator)
         }),
     );
@@ -121,20 +121,20 @@ pub fn selector_last() -> Arc<AggregateUDF> {
         Arc::new(|return_type| {
             let value_type = get_value_datatype(return_type)?;
             let accumulator: Box<dyn Accumulator> = match value_type {
-            DataType::Float64 => Box::new(SelectorAccumulator::<F64LastSelector>::new()),
-            DataType::Int64 => Box::new(SelectorAccumulator::<I64LastSelector>::new()),
-            DataType::UInt64 => Box::new(SelectorAccumulator::<U64LastSelector>::new()),
-            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8LastSelector>::new()),
-            DataType::Boolean => {
-                Box::new(SelectorAccumulator::<BooleanLastSelector>::new())
-            }
-            t => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
-                    t
-                )))
-            }
-        };
+                DataType::Float64 => Box::new(SelectorAccumulator::<F64LastSelector>::new()),
+                DataType::Int64 => Box::new(SelectorAccumulator::<I64LastSelector>::new()),
+                DataType::UInt64 => Box::new(SelectorAccumulator::<U64LastSelector>::new()),
+                DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8LastSelector>::new()),
+                DataType::Boolean => {
+                    Box::new(SelectorAccumulator::<BooleanLastSelector>::new())
+                }
+                t => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                        t
+                    )))
+                }
+            };
             Ok(accumulator)
         }),
     );
@@ -161,20 +161,20 @@ pub fn selector_min() -> Arc<AggregateUDF> {
         Arc::new(|return_type| {
             let value_type = get_value_datatype(return_type)?;
             let accumulator: Box<dyn Accumulator> = match value_type {
-            DataType::Float64 => Box::new(SelectorAccumulator::<F64MinSelector>::new()),
-            DataType::Int64 => Box::new(SelectorAccumulator::<I64MinSelector>::new()),
-            DataType::UInt64 => Box::new(SelectorAccumulator::<U64MinSelector>::new()),
-            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MinSelector>::new()),
-            DataType::Boolean => {
-                Box::new(SelectorAccumulator::<BooleanMinSelector>::new())
-            }
-            t => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
-                    t
-                )))
-            }
-        };
+                DataType::Float64 => Box::new(SelectorAccumulator::<F64MinSelector>::new()),
+                DataType::Int64 => Box::new(SelectorAccumulator::<I64MinSelector>::new()),
+                DataType::UInt64 => Box::new(SelectorAccumulator::<U64MinSelector>::new()),
+                DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MinSelector>::new()),
+                DataType::Boolean => {
+                    Box::new(SelectorAccumulator::<BooleanMinSelector>::new())
+                }
+                t => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                        t
+                    )))
+                }
+            };
             Ok(accumulator)
         }),
     );
@@ -201,20 +201,20 @@ pub fn selector_max() -> Arc<AggregateUDF> {
         Arc::new(|return_type| {
             let value_type = get_value_datatype(return_type)?;
             let accumulator: Box<dyn Accumulator> = match value_type {
-            DataType::Float64 => Box::new(SelectorAccumulator::<F64MaxSelector>::new()),
-            DataType::Int64 => Box::new(SelectorAccumulator::<I64MaxSelector>::new()),
-            DataType::UInt64 => Box::new(SelectorAccumulator::<U64MaxSelector>::new()),
-            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MaxSelector>::new()),
-            DataType::Boolean => {
-                Box::new(SelectorAccumulator::<BooleanMaxSelector>::new())
-            }
-            t => {
-                return Err(DataFusionError::Internal(format!(
-                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
-                    t
-                )))
-            }
-        };
+                DataType::Float64 => Box::new(SelectorAccumulator::<F64MaxSelector>::new()),
+                DataType::Int64 => Box::new(SelectorAccumulator::<I64MaxSelector>::new()),
+                DataType::UInt64 => Box::new(SelectorAccumulator::<U64MaxSelector>::new()),
+                DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MaxSelector>::new()),
+                DataType::Boolean => {
+                    Box::new(SelectorAccumulator::<BooleanMaxSelector>::new())
+                }
+                t => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                        t
+                    )))
+                }
+            };
             Ok(accumulator)
         }),
     );
@@ -417,7 +417,7 @@ mod test {
             selector_first().call(vec![col("f64_value"), col("time")]),
             vec![
                 "+--------------------------------------------------+",
-                "| first(t.f64_value,t.time)                        |",
+                "| selector_first(t.f64_value,t.time)               |",
                 "+--------------------------------------------------+",
                 "| {\"value\": 2, \"time\": 1970-01-01 00:00:00.000001} |",
                 "+--------------------------------------------------+",
@@ -432,7 +432,7 @@ mod test {
             selector_first().call(vec![col("i64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| first(t.i64_value,t.time)                         |",
+                "| selector_first(t.i64_value,t.time)                |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 20, \"time\": 1970-01-01 00:00:00.000001} |",
                 "+---------------------------------------------------+",
@@ -447,7 +447,7 @@ mod test {
             selector_first().call(vec![col("u64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| first(t.u64_value,t.time)                         |",
+                "| selector_first(t.u64_value,t.time)                |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 20, \"time\": 1970-01-01 00:00:00.000001} |",
                 "+---------------------------------------------------+",
@@ -462,7 +462,7 @@ mod test {
             selector_first().call(vec![col("string_value"), col("time")]),
             vec![
                 "+------------------------------------------------------+",
-                "| first(t.string_value,t.time)                         |",
+                "| selector_first(t.string_value,t.time)                |",
                 "+------------------------------------------------------+",
                 "| {\"value\": \"two\", \"time\": 1970-01-01 00:00:00.000001} |",
                 "+------------------------------------------------------+",
@@ -477,7 +477,7 @@ mod test {
             selector_first().call(vec![col("bool_value"), col("time")]),
             vec![
                 "+-----------------------------------------------------+",
-                "| first(t.bool_value,t.time)                          |",
+                "| selector_first(t.bool_value,t.time)                 |",
                 "+-----------------------------------------------------+",
                 "| {\"value\": true, \"time\": 1970-01-01 00:00:00.000001} |",
                 "+-----------------------------------------------------+",
@@ -494,7 +494,7 @@ mod test {
             selector_last().call(vec![col("f64_value"), col("time")]),
             vec![
                 "+--------------------------------------------------+",
-                "| last(t.f64_value,t.time)                         |",
+                "| selector_last(t.f64_value,t.time)                |",
                 "+--------------------------------------------------+",
                 "| {\"value\": 3, \"time\": 1970-01-01 00:00:00.000006} |",
                 "+--------------------------------------------------+",
@@ -509,7 +509,7 @@ mod test {
             selector_last().call(vec![col("i64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| last(t.i64_value,t.time)                          |",
+                "| selector_last(t.i64_value,t.time)                 |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 30, \"time\": 1970-01-01 00:00:00.000006} |",
                 "+---------------------------------------------------+",
@@ -524,7 +524,7 @@ mod test {
             selector_last().call(vec![col("u64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| last(t.u64_value,t.time)                          |",
+                "| selector_last(t.u64_value,t.time)                 |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 30, \"time\": 1970-01-01 00:00:00.000006} |",
                 "+---------------------------------------------------+",
@@ -539,7 +539,7 @@ mod test {
             selector_last().call(vec![col("string_value"), col("time")]),
             vec![
                 "+--------------------------------------------------------+",
-                "| last(t.string_value,t.time)                            |",
+                "| selector_last(t.string_value,t.time)                   |",
                 "+--------------------------------------------------------+",
                 "| {\"value\": \"three\", \"time\": 1970-01-01 00:00:00.000006} |",
                 "+--------------------------------------------------------+",
@@ -554,7 +554,7 @@ mod test {
             selector_last().call(vec![col("bool_value"), col("time")]),
             vec![
                 "+------------------------------------------------------+",
-                "| last(t.bool_value,t.time)                            |",
+                "| selector_last(t.bool_value,t.time)                   |",
                 "+------------------------------------------------------+",
                 "| {\"value\": false, \"time\": 1970-01-01 00:00:00.000006} |",
                 "+------------------------------------------------------+",
@@ -571,7 +571,7 @@ mod test {
             selector_min().call(vec![col("f64_value"), col("time")]),
             vec![
                 "+--------------------------------------------------+",
-                "| min(t.f64_value,t.time)                          |",
+                "| selector_min(t.f64_value,t.time)                 |",
                 "+--------------------------------------------------+",
                 "| {\"value\": 1, \"time\": 1970-01-01 00:00:00.000004} |",
                 "+--------------------------------------------------+",
@@ -586,7 +586,7 @@ mod test {
             selector_min().call(vec![col("i64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| min(t.i64_value,t.time)                           |",
+                "| selector_min(t.i64_value,t.time)                  |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 10, \"time\": 1970-01-01 00:00:00.000004} |",
                 "+---------------------------------------------------+",
@@ -601,7 +601,7 @@ mod test {
             selector_min().call(vec![col("u64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| min(t.u64_value,t.time)                           |",
+                "| selector_min(t.u64_value,t.time)                  |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 10, \"time\": 1970-01-01 00:00:00.000004} |",
                 "+---------------------------------------------------+",
@@ -616,7 +616,7 @@ mod test {
             selector_min().call(vec![col("string_value"), col("time")]),
             vec![
                 "+--------------------------------------------------------+",
-                "| min(t.string_value,t.time)                             |",
+                "| selector_min(t.string_value,t.time)                    |",
                 "+--------------------------------------------------------+",
                 "| {\"value\": \"a_one\", \"time\": 1970-01-01 00:00:00.000004} |",
                 "+--------------------------------------------------------+",
@@ -631,7 +631,7 @@ mod test {
             selector_min().call(vec![col("bool_value"), col("time")]),
             vec![
                 "+------------------------------------------------------+",
-                "| min(t.bool_value,t.time)                             |",
+                "| selector_min(t.bool_value,t.time)                    |",
                 "+------------------------------------------------------+",
                 "| {\"value\": false, \"time\": 1970-01-01 00:00:00.000002} |",
                 "+------------------------------------------------------+",
@@ -648,7 +648,7 @@ mod test {
             selector_max().call(vec![col("f64_value"), col("time")]),
             vec![
                 "+--------------------------------------------------+",
-                "| max(t.f64_value,t.time)                          |",
+                "| selector_max(t.f64_value,t.time)                 |",
                 "+--------------------------------------------------+",
                 "| {\"value\": 5, \"time\": 1970-01-01 00:00:00.000005} |",
                 "+--------------------------------------------------+",
@@ -663,7 +663,7 @@ mod test {
             selector_max().call(vec![col("i64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| max(t.i64_value,t.time)                           |",
+                "| selector_max(t.i64_value,t.time)                  |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 50, \"time\": 1970-01-01 00:00:00.000005} |",
                 "+---------------------------------------------------+",
@@ -678,7 +678,7 @@ mod test {
             selector_max().call(vec![col("u64_value"), col("time")]),
             vec![
                 "+---------------------------------------------------+",
-                "| max(t.u64_value,t.time)                           |",
+                "| selector_max(t.u64_value,t.time)                  |",
                 "+---------------------------------------------------+",
                 "| {\"value\": 50, \"time\": 1970-01-01 00:00:00.000005} |",
                 "+---------------------------------------------------+",
@@ -693,7 +693,7 @@ mod test {
             selector_max().call(vec![col("string_value"), col("time")]),
             vec![
                 "+---------------------------------------------------------+",
-                "| max(t.string_value,t.time)                              |",
+                "| selector_max(t.string_value,t.time)                     |",
                 "+---------------------------------------------------------+",
                 "| {\"value\": \"z_five\", \"time\": 1970-01-01 00:00:00.000005} |",
                 "+---------------------------------------------------------+",
@@ -708,7 +708,7 @@ mod test {
             selector_max().call(vec![col("bool_value"), col("time")]),
             vec![
                 "+-----------------------------------------------------+",
-                "| max(t.bool_value,t.time)                            |",
+                "| selector_max(t.bool_value,t.time)                   |",
                 "+-----------------------------------------------------+",
                 "| {\"value\": true, \"time\": 1970-01-01 00:00:00.000001} |",
                 "+-----------------------------------------------------+",
