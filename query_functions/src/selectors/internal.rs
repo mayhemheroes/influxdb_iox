@@ -25,7 +25,7 @@ use datafusion::{
 
 use observability_deps::tracing::debug;
 
-use super::{Selector, SelectorOutput};
+use super::Selector;
 
 /// Trait for comparing values in arrays with their native
 /// representation. This so the same comparison expression can be used
@@ -138,11 +138,11 @@ macro_rules! make_first_selector {
                 ])
             }
 
-            fn evaluate(&self, output: &SelectorOutput) -> DataFusionResult<ScalarValue> {
-                match output {
-                    SelectorOutput::Value => Ok($TO_SCALARVALUE(self.value.clone())),
-                    SelectorOutput::Time => Ok(ScalarValue::TimestampNanosecond(self.time, None)),
-                }
+            fn evaluate_to_vec(&self) -> DataFusionResult<Vec<ScalarValue>> {
+                Ok(vec![
+                    $TO_SCALARVALUE(self.value.clone()),
+                    ScalarValue::TimestampNanosecond(self.time, None),
+                ])
             }
 
             fn update_batch(
@@ -245,11 +245,11 @@ macro_rules! make_last_selector {
                 ])
             }
 
-            fn evaluate(&self, output: &SelectorOutput) -> DataFusionResult<ScalarValue> {
-                match output {
-                    SelectorOutput::Value => Ok($TO_SCALARVALUE(self.value.clone())),
-                    SelectorOutput::Time => Ok(ScalarValue::TimestampNanosecond(self.time, None)),
-                }
+            fn evaluate_to_vec(&self) -> DataFusionResult<Vec<ScalarValue>> {
+                Ok(vec![
+                    $TO_SCALARVALUE(self.value.clone()),
+                    ScalarValue::TimestampNanosecond(self.time, None),
+                ])
             }
 
             fn update_batch(
@@ -376,11 +376,11 @@ macro_rules! make_min_selector {
                 ])
             }
 
-            fn evaluate(&self, output: &SelectorOutput) -> DataFusionResult<ScalarValue> {
-                match output {
-                    SelectorOutput::Value => Ok($TO_SCALARVALUE(self.value.clone())),
-                    SelectorOutput::Time => Ok(ScalarValue::TimestampNanosecond(self.time, None)),
-                }
+            fn evaluate_to_vec(&self) -> DataFusionResult<Vec<ScalarValue>> {
+                Ok(vec![
+                    $TO_SCALARVALUE(self.value.clone()),
+                    ScalarValue::TimestampNanosecond(self.time, None),
+                ])
             }
 
             fn update_batch(
@@ -488,11 +488,11 @@ macro_rules! make_max_selector {
                 ])
             }
 
-            fn evaluate(&self, output: &SelectorOutput) -> DataFusionResult<ScalarValue> {
-                match output {
-                    SelectorOutput::Value => Ok($TO_SCALARVALUE(self.value.clone())),
-                    SelectorOutput::Time => Ok(ScalarValue::TimestampNanosecond(self.time, None)),
-                }
+            fn evaluate_to_vec(&self) -> DataFusionResult<Vec<ScalarValue>> {
+                Ok(vec![
+                    $TO_SCALARVALUE(self.value.clone()),
+                    ScalarValue::TimestampNanosecond(self.time, None),
+                ])
             }
 
             fn update_batch(

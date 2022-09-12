@@ -8,18 +8,21 @@
 //! scalar. Selector functions return the entire row that was
 //! "selected" from the timeseries (value and time pair).
 //!
-//! Note: At the time of writing, DataFusion aggregate functions have
-//! no way to handle aggregates that produce multiple columns.
-//!
-//! This module implements a workaround of "do the aggregation twice
-//! with two distinct functions" to get something working. It should
-//! should be removed when DataFusion / Arrow has proper support
+//! This module implements a selector as a DataFusion aggregate
+//! function which returns multiple columns via a struct with fields
+//! `value` and `time`
 use std::{fmt::Debug, sync::Arc};
 
-use arrow::{array::ArrayRef, datatypes::DataType};
+use arrow::{
+    array::ArrayRef,
+    datatypes::{DataType, Field},
+};
 use datafusion::{
     error::{DataFusionError, Result as DataFusionResult},
-    logical_expr::{AggregateState, Signature, Volatility},
+    execution::context::SessionState,
+    logical_expr::{
+        AccumulatorFunctionImplementation, AggregateState, Signature, TypeSignature, Volatility,
+    },
     physical_plan::{udaf::AggregateUDF, Accumulator},
     scalar::ScalarValue,
 };
@@ -35,128 +38,187 @@ use internal::{
 };
 use schema::TIME_DATA_TYPE;
 
-/// Returns a DataFusion user defined aggregate function for computing
-/// one field of the first() selector function.
-///
-/// Note that until <https://issues.apache.org/jira/browse/ARROW-10945>
-/// is fixed, selector functions must be computed using two separate
-/// function calls, one each for the value and time part
-///
-/// first(value_column, timestamp_column) -> value and timestamp
-///
-/// timestamp is the minimum value of the timestamp_column
-///
-/// value is the value of the value_column at the position of the
-/// minimum of the timestamp column. If there are multiple rows with
-/// the minimum timestamp value, the value of the value_column is
-/// arbitrarily picked
-pub fn selector_first(data_type: &DataType, output: SelectorOutput) -> AggregateUDF {
-    let name = match output {
-        SelectorOutput::Value => "selector_first_value",
-        SelectorOutput::Time => "selector_first_time",
-    };
+/// registers selector functions so they can be invoked via SQL
+pub fn register_selector_aggregates(mut state: SessionState) -> SessionState {
+    let first = selector_first();
+    let last = selector_last();
+    let min = selector_min();
+    let max = selector_max();
 
-    match data_type {
-        DataType::Float64 => make_uda::<F64FirstSelector>(name, output),
-        DataType::Int64 => make_uda::<I64FirstSelector>(name, output),
-        DataType::UInt64 => make_uda::<U64FirstSelector>(name, output),
-        DataType::Utf8 => make_uda::<Utf8FirstSelector>(name, output),
-        DataType::Boolean => make_uda::<BooleanFirstSelector>(name, output),
-        _ => unimplemented!("first not supported for {:?}", data_type),
-    }
+    //TODO make a nicer api for this in DataFusion
+    state
+        .aggregate_functions
+        .insert(first.name.to_string(), first);
+
+    state
+        .aggregate_functions
+        .insert(last.name.to_string(), last);
+
+    state.aggregate_functions.insert(min.name.to_string(), min);
+
+    state.aggregate_functions.insert(max.name.to_string(), max);
+
+    state
 }
 
 /// Returns a DataFusion user defined aggregate function for computing
-/// one field of the last() selector function.
+/// the first(value, time) selector function, returning a struct:
 ///
-/// Note that until <https://issues.apache.org/jira/browse/ARROW-10945>
-/// is fixed, selector functions must be computed using two separate
-/// function calls, one each for the value and time part
+/// first(value, time) -> struct { value, time }
 ///
-/// selector_last(data_column, timestamp_column) -> value and timestamp
+/// ```text
+/// {
+///   value: value at the row of the minimum of the time column.
+///   time: value of the minimum time column
+/// }
+/// ```
 ///
-/// timestamp is the maximum value of the timestamp_column
-///
-/// value is the value of the data_column at the position of the
-/// maximum of the timestamp column. If there are multiple rows with
-/// the maximum timestamp value, the value of the data_column is
-/// arbitrarily picked
-pub fn selector_last(data_type: &DataType, output: SelectorOutput) -> AggregateUDF {
-    let name = match output {
-        SelectorOutput::Value => "selector_last_value",
-        SelectorOutput::Time => "selector_last_time",
-    };
-
-    match data_type {
-        DataType::Float64 => make_uda::<F64LastSelector>(name, output),
-        DataType::Int64 => make_uda::<I64LastSelector>(name, output),
-        DataType::UInt64 => make_uda::<U64LastSelector>(name, output),
-        DataType::Utf8 => make_uda::<Utf8LastSelector>(name, output),
-        DataType::Boolean => make_uda::<BooleanLastSelector>(name, output),
-        _ => unimplemented!("last not supported for {:?}", data_type),
-    }
+/// If there are multiple rows with the minimum timestamp value, the
+/// value is arbitrary
+pub fn selector_first() -> Arc<AggregateUDF> {
+    let udaf = make_selector_udaf(
+        "selector_first",
+        Arc::new(|return_type| {
+            let value_type = get_value_datatype(return_type)?;
+            let accumulator: Box<dyn Accumulator> = match value_type {
+            DataType::Float64 => Box::new(SelectorAccumulator::<F64FirstSelector>::new()),
+            DataType::Int64 => Box::new(SelectorAccumulator::<I64FirstSelector>::new()),
+            DataType::UInt64 => Box::new(SelectorAccumulator::<U64FirstSelector>::new()),
+            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8FirstSelector>::new()),
+            DataType::Boolean => {
+                Box::new(SelectorAccumulator::<BooleanFirstSelector>::new())
+            }
+            t => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                    t
+                )))
+            }
+        };
+            Ok(accumulator)
+        }),
+    );
+    Arc::new(udaf)
 }
 
 /// Returns a DataFusion user defined aggregate function for computing
-/// one field of the min() selector function.
+/// the last(value, time) selector function, returning a struct:
 ///
-/// Note that until <https://issues.apache.org/jira/browse/ARROW-10945>
-/// is fixed, selector functions must be computed using two separate
-/// function calls, one each for the value and time part
+/// last(value, time) -> struct { value, time }
 ///
-/// selector_min(data_column, timestamp_column) -> value and timestamp
+/// ```text
+/// {
+///   value: value at the row of the maximum of the time column.
+///   time: value of the maximum time column
+/// }
+/// ```
 ///
-/// value is the minimum value of the data_column
-///
-/// timestamp is the value of the timestamp_column at the position of
-/// the minimum value_column. If there are multiple rows with the
-/// minimum timestamp value, the value of the data_column with the
-/// first (earliest/smallest) timestamp is chosen
-pub fn selector_min(data_type: &DataType, output: SelectorOutput) -> AggregateUDF {
-    let name = match output {
-        SelectorOutput::Value => "selector_min_value",
-        SelectorOutput::Time => "selector_min_time",
-    };
-
-    match data_type {
-        DataType::Float64 => make_uda::<F64MinSelector>(name, output),
-        DataType::Int64 => make_uda::<I64MinSelector>(name, output),
-        DataType::UInt64 => make_uda::<U64MinSelector>(name, output),
-        DataType::Utf8 => make_uda::<Utf8MinSelector>(name, output),
-        DataType::Boolean => make_uda::<BooleanMinSelector>(name, output),
-        _ => unimplemented!("min not supported for {:?}", data_type),
-    }
+/// If there are multiple rows with the maximum timestamp value, the
+/// value is arbitrary
+pub fn selector_last() -> Arc<AggregateUDF> {
+    let udaf = make_selector_udaf(
+        "selector_last",
+        Arc::new(|return_type| {
+            let value_type = get_value_datatype(return_type)?;
+            let accumulator: Box<dyn Accumulator> = match value_type {
+            DataType::Float64 => Box::new(SelectorAccumulator::<F64LastSelector>::new()),
+            DataType::Int64 => Box::new(SelectorAccumulator::<I64LastSelector>::new()),
+            DataType::UInt64 => Box::new(SelectorAccumulator::<U64LastSelector>::new()),
+            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8LastSelector>::new()),
+            DataType::Boolean => {
+                Box::new(SelectorAccumulator::<BooleanLastSelector>::new())
+            }
+            t => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                    t
+                )))
+            }
+        };
+            Ok(accumulator)
+        }),
+    );
+    Arc::new(udaf)
 }
 
 /// Returns a DataFusion user defined aggregate function for computing
-/// one field of the max() selector function.
+/// the min(value, time) selector function, returning a struct:
 ///
-/// Note that until <https://issues.apache.org/jira/browse/ARROW-10945>
-/// is fixed, selector functions must be computed using two separate
-/// function calls, one each for the value and time part
+/// min(value, time) -> struct { value, time }
 ///
-/// selector_max(data_column, timestamp_column) -> value and timestamp
+/// ```text
+/// {
+///   value: value at the row with minimum value
+///   time: value of time for row with minimum value
+/// }
+/// ```
 ///
-/// value is the maximum value of the data_column
-///
-/// timestamp is the value of the timestamp_column at the position of
-/// the maximum value_column. If there are multiple rows with the
-/// maximum timestamp value, the value of the data_column with the
-/// first (earliest/smallest) timestamp is chosen
-pub fn selector_max(data_type: &DataType, output: SelectorOutput) -> AggregateUDF {
-    let name = match output {
-        SelectorOutput::Value => "selector_max_value",
-        SelectorOutput::Time => "selector_max_time",
-    };
+/// If there are multiple rows with the same minimum value, the value
+/// with the first (earliest/smallest) timestamp is chosen
+pub fn selector_min() -> Arc<AggregateUDF> {
+    let udaf = make_selector_udaf(
+        "selector_min",
+        Arc::new(|return_type| {
+            let value_type = get_value_datatype(return_type)?;
+            let accumulator: Box<dyn Accumulator> = match value_type {
+            DataType::Float64 => Box::new(SelectorAccumulator::<F64MinSelector>::new()),
+            DataType::Int64 => Box::new(SelectorAccumulator::<I64MinSelector>::new()),
+            DataType::UInt64 => Box::new(SelectorAccumulator::<U64MinSelector>::new()),
+            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MinSelector>::new()),
+            DataType::Boolean => {
+                Box::new(SelectorAccumulator::<BooleanMinSelector>::new())
+            }
+            t => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                    t
+                )))
+            }
+        };
+            Ok(accumulator)
+        }),
+    );
+    Arc::new(udaf)
+}
 
-    match data_type {
-        DataType::Float64 => make_uda::<F64MaxSelector>(name, output),
-        DataType::Int64 => make_uda::<I64MaxSelector>(name, output),
-        DataType::UInt64 => make_uda::<U64MaxSelector>(name, output),
-        DataType::Utf8 => make_uda::<Utf8MaxSelector>(name, output),
-        DataType::Boolean => make_uda::<BooleanMaxSelector>(name, output),
-        _ => unimplemented!("max not supported for {:?}", data_type),
-    }
+/// Returns a DataFusion user defined aggregate function for computing
+/// the max(value, time) selector function, returning a struct:
+///
+/// max(value, time) -> struct { value, time }
+///
+/// ```text
+/// {
+///   value: value at the row with maximum value
+///   time: value of time for row with maximum value
+/// }
+/// ```
+///
+/// If there are multiple rows with the same maximum value, the value
+/// with the first (earliest/smallest) timestamp is chosen
+pub fn selector_max() -> Arc<AggregateUDF> {
+    let udaf = make_selector_udaf(
+        "selector_max",
+        Arc::new(|return_type| {
+            let value_type = get_value_datatype(return_type)?;
+            let accumulator: Box<dyn Accumulator> = match value_type {
+            DataType::Float64 => Box::new(SelectorAccumulator::<F64MaxSelector>::new()),
+            DataType::Int64 => Box::new(SelectorAccumulator::<I64MaxSelector>::new()),
+            DataType::UInt64 => Box::new(SelectorAccumulator::<U64MaxSelector>::new()),
+            DataType::Utf8 => Box::new(SelectorAccumulator::<Utf8MaxSelector>::new()),
+            DataType::Boolean => {
+                Box::new(SelectorAccumulator::<BooleanMaxSelector>::new())
+            }
+            t => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unexpected return type. Expected value type of f64/i64/u64/string/bool, got {:?}",
+                    t
+                )))
+            }
+        };
+            Ok(accumulator)
+        }),
+    );
+    Arc::new(udaf)
 }
 
 /// Implements the logic of the specific selector function (this is a
@@ -170,71 +232,100 @@ trait Selector: Debug + Default + Send + Sync {
     /// return state in a form that DataFusion can store during execution
     fn datafusion_state(&self) -> DataFusionResult<Vec<AggregateState>>;
 
-    /// produces the final value of this selector for the specified output type
-    fn evaluate(&self, output: &SelectorOutput) -> DataFusionResult<ScalarValue>;
+    /// produces the final value of this selector as `Vec<ScalarValue>`s
+    fn evaluate_to_vec(&self) -> DataFusionResult<Vec<ScalarValue>>;
 
     /// Update this selector's state based on values in value_arr and time_arr
     fn update_batch(&mut self, value_arr: &ArrayRef, time_arr: &ArrayRef) -> DataFusionResult<()>;
 }
 
-/// Describes which part of the selector to return: the timestamp or
-/// the value (when <https://issues.apache.org/jira/browse/ARROW-10945>
-/// is fixed, this enum should be removed)
-#[derive(Debug, Clone, Copy)]
-pub enum SelectorOutput {
-    /// Return the value
-    Value,
-    /// Return the timestamp
-    Time,
-}
-
-impl SelectorOutput {
-    /// return the data type produced for this type of output
-    fn return_type(&self, input_type: &DataType) -> DataType {
-        match self {
-            Self::Value => input_type.clone(),
-            // timestamps are always the same type
-            Self::Time => TIME_DATA_TYPE(),
-        }
-    }
-}
-
-type ReturnTypeFunction = Arc<dyn Fn(&[DataType]) -> DataFusionResult<Arc<DataType>> + Send + Sync>;
-type StateTypeFactory =
-    Arc<dyn Fn(&DataType) -> DataFusionResult<Arc<Vec<DataType>>> + Send + Sync>;
-type Factory = Arc<dyn Fn(&DataType) -> DataFusionResult<Box<dyn Accumulator>> + Send + Sync>;
-
-/// Factory function for creating the UDA function for DataFusion
-fn make_uda<SELECTOR>(name: &'static str, output: SelectorOutput) -> AggregateUDF
-where
-    SELECTOR: Selector + 'static,
-{
-    let value_data_type = SELECTOR::value_data_type();
-    let input_signature = Signature::exact(
-        vec![value_data_type.clone(), TIME_DATA_TYPE()],
+/// Create a User Defined Aggregate Function (UDAF) for datafusion.
+fn make_selector_udaf(
+    name: &str,
+    accumulator_factory: AccumulatorFunctionImplementation,
+) -> AggregateUDF {
+    // All selectors support the same input types / signatures
+    let input_signature = Signature::one_of(
+        vec![
+            TypeSignature::Exact(vec![DataType::Float64, TIME_DATA_TYPE()]),
+            TypeSignature::Exact(vec![DataType::Int64, TIME_DATA_TYPE()]),
+            TypeSignature::Exact(vec![DataType::UInt64, TIME_DATA_TYPE()]),
+            TypeSignature::Exact(vec![DataType::Utf8, TIME_DATA_TYPE()]),
+            TypeSignature::Exact(vec![DataType::Boolean, TIME_DATA_TYPE()]),
+        ],
         Volatility::Stable,
     );
 
-    let state_type = Arc::new(vec![value_data_type.clone(), TIME_DATA_TYPE()]);
-    let state_type_factory: StateTypeFactory = Arc::new(move |_| Ok(Arc::clone(&state_type)));
+    // return type of the selector is based on the input arguments.
+    //
+    // The inputs are (value, time) and the output is a struct with a
+    // 'value' and 'time' field of the same time.
+    let return_type_func: ReturnTypeFunction = Arc::new(|arg_types| {
+        assert_eq!(
+            arg_types.len(),
+            2,
+            "selector expected exactly 2 arguments, got {}",
+            arg_types.len()
+        );
+        let value_type = &arg_types[0];
+        assert_eq!(&arg_types[1], &TIME_DATA_TYPE());
 
-    let factory: Factory =
-        Arc::new(move |_| Ok(Box::new(SelectorAccumulator::<SELECTOR>::new(output))));
+        Ok(Arc::new(make_output_datatype(value_type.clone())))
+    });
 
-    let return_type = Arc::new(output.return_type(&value_data_type));
-    let return_type_func: ReturnTypeFunction = Arc::new(move |_| Ok(Arc::clone(&return_type)));
+    // state type given the return type
+    let state_type_factory: AccumulatorFactory = Arc::new(|return_type| {
+        let value_type = get_value_datatype(&return_type)?;
+
+        Ok(Arc::new(make_state_datatypes(value_type.clone())))
+    });
 
     AggregateUDF::new(
         name,
         &input_signature,
         &return_type_func,
-        &factory,
+        &accumulator_factory,
         &state_type_factory,
     )
 }
 
+/// Create the struct fields for a selector with DataType `value_type`
+fn make_struct_fields(value_type: DataType) -> Vec<Field> {
+    vec![
+        Field::new("value", value_type.clone(), true),
+        Field::new("time", TIME_DATA_TYPE(), true),
+    ]
+}
+
+/// Return the output data type for a selector with DataType `value_type`
+fn make_output_datatype(value_type: DataType) -> DataType {
+    DataType::Struct(make_struct_fields(value_type))
+}
+
+/// Return the value type given the (struct)  output data type
+fn get_value_datatype(output_type: &DataType) -> DataFusionResult<&DataType> {
+    match output_type {
+        DataType::Struct(fields) => Ok(fields[0].data_type()),
+        t => Err(DataFusionError::Internal(format!(
+            "Unexpected selector return type. Expected struct got {:?}",
+            t
+        ))),
+    }
+}
+
+/// Return the state in which the arguments are stored
+fn make_state_datatypes(value_type: DataType) -> Vec<DataType> {
+    vec![value_type, TIME_DATA_TYPE()]
+}
+
+type ReturnTypeFunction = Arc<dyn Fn(&[DataType]) -> DataFusionResult<Arc<DataType>> + Send + Sync>;
+type AccumulatorFactory =
+    Arc<dyn Fn(&DataType) -> DataFusionResult<Arc<Vec<DataType>>> + Send + Sync>;
+
 /// Structure that implements the Accumulator trait for DataFusion
 /// and processes (value, timestamp) pair and computes values
+///
+/// TODO inline this into the selector implementations
 #[derive(Debug)]
 struct SelectorAccumulator<SELECTOR>
 where
@@ -242,17 +333,14 @@ where
 {
     // The underlying implementation for the selector
     selector: SELECTOR,
-    // Determine which value is output
-    output: SelectorOutput,
 }
 
 impl<SELECTOR> SelectorAccumulator<SELECTOR>
 where
     SELECTOR: Selector,
 {
-    pub fn new(output: SelectorOutput) -> Self {
+    pub fn new() -> Self {
         Self {
-            output,
             selector: SELECTOR::default(),
         }
     }
@@ -263,19 +351,22 @@ where
     SELECTOR: Selector + 'static,
 {
     // this function serializes our state to a vector of
-    // `ScalarValue`s, which DataFusion uses to pass this state
-    // between execution stages.
+    // `ScalarValue`s, which DataFusion passes between execution
+    // stages.
     fn state(&self) -> DataFusionResult<Vec<AggregateState>> {
         self.selector.datafusion_state()
     }
 
     // Return the final value of this aggregator.
     fn evaluate(&self) -> DataFusionResult<ScalarValue> {
-        self.selector.evaluate(&self.output)
+        Ok(ScalarValue::Struct(
+            Some(self.selector.evaluate_to_vec()?),
+            Box::new(make_struct_fields(SELECTOR::value_data_type())),
+        ))
     }
 
-    // This function receives one entry per argument of this
-    // accumulator and updates the selector state function appropriately
+    // receives one entry per argument of this accumulator and updates
+    // the selector state function appropriately
     fn update_batch(&mut self, values: &[ArrayRef]) -> DataFusionResult<()> {
         if values.is_empty() {
             return Ok(());
@@ -283,7 +374,7 @@ where
 
         if values.len() != 2 {
             return Err(DataFusionError::Internal(format!(
-                "Internal error: Expected 2 arguments passed to selector function but got {}",
+                "Internal error: Expected 2 arguments passed to selector but got {}",
                 values.len()
             )));
         }
@@ -318,316 +409,327 @@ mod test {
 
     use super::*;
 
+    // Begin `first`
+
     #[tokio::test]
-    async fn test_selector_first() {
-        let cases = vec![
-            (
-                selector_first(&DataType::Float64, SelectorOutput::Value),
-                selector_first(&DataType::Float64, SelectorOutput::Time),
-                "f64_value",
-                vec![
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| selector_first_value(t.f64_value,t.time) | selector_first_time(t.f64_value,t.time) |",
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| 2                                        | 1970-01-01 00:00:00.000001              |",
-                    "+------------------------------------------+-----------------------------------------+",
-                ],
-            ),
-            (
-                selector_first(&DataType::Int64, SelectorOutput::Value),
-                selector_first(&DataType::Int64, SelectorOutput::Time),
-                "i64_value",
-                vec![
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| selector_first_value(t.i64_value,t.time) | selector_first_time(t.i64_value,t.time) |",
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| 20                                       | 1970-01-01 00:00:00.000001              |",
-                    "+------------------------------------------+-----------------------------------------+",
-                ],
-            ),
-            (
-                selector_first(&DataType::UInt64, SelectorOutput::Value),
-                selector_first(&DataType::UInt64, SelectorOutput::Time),
-                "u64_value",
-                vec![
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| selector_first_value(t.u64_value,t.time) | selector_first_time(t.u64_value,t.time) |",
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| 20                                       | 1970-01-01 00:00:00.000001              |",
-                    "+------------------------------------------+-----------------------------------------+",
-                ],
-            ),
-            (
-                selector_first(&DataType::Utf8, SelectorOutput::Value),
-                selector_first(&DataType::Utf8, SelectorOutput::Time),
-                "string_value",
-                vec![
-                    "+---------------------------------------------+--------------------------------------------+",
-                    "| selector_first_value(t.string_value,t.time) | selector_first_time(t.string_value,t.time) |",
-                    "+---------------------------------------------+--------------------------------------------+",
-                    "| two                                         | 1970-01-01 00:00:00.000001                 |",
-                    "+---------------------------------------------+--------------------------------------------+",
-                ],
-            ),
-            (
-                selector_first(&DataType::Boolean, SelectorOutput::Value),
-                selector_first(&DataType::Boolean, SelectorOutput::Time),
-                "bool_value",
-                vec![
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| selector_first_value(t.bool_value,t.time) | selector_first_time(t.bool_value,t.time) |",
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| true                                      | 1970-01-01 00:00:00.000001               |",
-                    "+-------------------------------------------+------------------------------------------+",
-                ],
-            )
-        ];
-
-        for (val_func, time_func, val_column, expected) in cases.into_iter() {
-            let args = vec![col(val_column), col("time")];
-            let aggs = vec![val_func.call(args.clone()), time_func.call(args)];
-            let actual = run_plan(aggs).await;
-
-            assert_eq!(
-                expected, actual,
-                "\n\nEXPECTED:\n{:#?}\nACTUAL:\n{:#?}\n",
-                expected, actual
-            );
-        }
+    async fn test_selector_first_f64() {
+        run_case(
+            selector_first().call(vec![col("f64_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------+",
+                "| first(t.f64_value,t.time)                        |",
+                "+--------------------------------------------------+",
+                "| {\"value\": 2, \"time\": 1970-01-01 00:00:00.000001} |",
+                "+--------------------------------------------------+",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn test_selector_last() {
-        let cases = vec![
-            (
-                selector_last(&DataType::Float64, SelectorOutput::Value),
-                selector_last(&DataType::Float64, SelectorOutput::Time),
-                "f64_value",
-                vec![
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| selector_last_value(t.f64_value,t.time) | selector_last_time(t.f64_value,t.time) |",
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| 3                                       | 1970-01-01 00:00:00.000006             |",
-                    "+-----------------------------------------+----------------------------------------+",
-                ],
-            ),
-            (
-                selector_last(&DataType::Int64, SelectorOutput::Value),
-                selector_last(&DataType::Int64, SelectorOutput::Time),
-                "i64_value",
-                vec![
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| selector_last_value(t.i64_value,t.time) | selector_last_time(t.i64_value,t.time) |",
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| 30                                      | 1970-01-01 00:00:00.000006             |",
-                    "+-----------------------------------------+----------------------------------------+",
-                ],
-            ),
-            (
-                selector_last(&DataType::UInt64, SelectorOutput::Value),
-                selector_last(&DataType::UInt64, SelectorOutput::Time),
-                "u64_value",
-                vec![
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| selector_last_value(t.u64_value,t.time) | selector_last_time(t.u64_value,t.time) |",
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| 30                                      | 1970-01-01 00:00:00.000006             |",
-                    "+-----------------------------------------+----------------------------------------+",
-                ],
-            ),
-            (
-                selector_last(&DataType::Utf8, SelectorOutput::Value),
-                selector_last(&DataType::Utf8, SelectorOutput::Time),
-                "string_value",
-                vec![
-                    "+--------------------------------------------+-------------------------------------------+",
-                    "| selector_last_value(t.string_value,t.time) | selector_last_time(t.string_value,t.time) |",
-                    "+--------------------------------------------+-------------------------------------------+",
-                    "| three                                      | 1970-01-01 00:00:00.000006                |",
-                    "+--------------------------------------------+-------------------------------------------+",
-                ],
-            ),
-            (
-                selector_last(&DataType::Boolean, SelectorOutput::Value),
-                selector_last(&DataType::Boolean, SelectorOutput::Time),
-                "bool_value",
-                vec![
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| selector_last_value(t.bool_value,t.time) | selector_last_time(t.bool_value,t.time) |",
-                    "+------------------------------------------+-----------------------------------------+",
-                    "| false                                    | 1970-01-01 00:00:00.000006              |",
-                    "+------------------------------------------+-----------------------------------------+",
-                ],
-            )
-        ];
-
-        for (val_func, time_func, val_column, expected) in cases.into_iter() {
-            let args = vec![col(val_column), col("time")];
-            let aggs = vec![val_func.call(args.clone()), time_func.call(args)];
-            let actual = run_plan(aggs).await;
-
-            assert_eq!(
-                expected, actual,
-                "\n\nEXPECTED:\n{:#?}\nACTUAL:\n{:#?}\n",
-                expected, actual
-            );
-        }
+    async fn test_selector_first_i64() {
+        run_case(
+            selector_first().call(vec![col("i64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| first(t.i64_value,t.time)                         |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 20, \"time\": 1970-01-01 00:00:00.000001} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn test_selector_min() {
-        let cases = vec![
-            (
-                selector_min(&DataType::Float64, SelectorOutput::Value),
-                selector_min(&DataType::Float64, SelectorOutput::Time),
-                "f64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_min_value(t.f64_value,t.time) | selector_min_time(t.f64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 1                                      | 1970-01-01 00:00:00.000004            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_min(&DataType::Int64, SelectorOutput::Value),
-                selector_min(&DataType::Int64, SelectorOutput::Time),
-                "i64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_min_value(t.i64_value,t.time) | selector_min_time(t.i64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 10                                     | 1970-01-01 00:00:00.000004            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_min(&DataType::UInt64, SelectorOutput::Value),
-                selector_min(&DataType::UInt64, SelectorOutput::Time),
-                "u64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_min_value(t.u64_value,t.time) | selector_min_time(t.u64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 10                                     | 1970-01-01 00:00:00.000004            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_min(&DataType::Utf8, SelectorOutput::Value),
-                selector_min(&DataType::Utf8, SelectorOutput::Time),
-                "string_value",
-                vec![
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| selector_min_value(t.string_value,t.time) | selector_min_time(t.string_value,t.time) |",
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| a_one                                     | 1970-01-01 00:00:00.000004               |",
-                    "+-------------------------------------------+------------------------------------------+",
-                ],
-            ),
-            (
-                selector_min(&DataType::Boolean, SelectorOutput::Value),
-                selector_min(&DataType::Boolean, SelectorOutput::Time),
-                "bool_value",
-                vec![
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| selector_min_value(t.bool_value,t.time) | selector_min_time(t.bool_value,t.time) |",
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| false                                   | 1970-01-01 00:00:00.000002             |",
-                    "+-----------------------------------------+----------------------------------------+",
-                ],
-            )
-        ];
-
-        for (val_func, time_func, val_column, expected) in cases.into_iter() {
-            let args = vec![col(val_column), col("time")];
-            let aggs = vec![val_func.call(args.clone()), time_func.call(args)];
-            let actual = run_plan(aggs).await;
-
-            assert_eq!(
-                expected, actual,
-                "\n\nEXPECTED:\n{:#?}\nACTUAL:\n{:#?}\n",
-                expected, actual
-            );
-        }
+    async fn test_selector_first_u64() {
+        run_case(
+            selector_first().call(vec![col("u64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| first(t.u64_value,t.time)                         |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 20, \"time\": 1970-01-01 00:00:00.000001} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn test_selector_max() {
-        let cases = vec![
-            (
-                selector_max(&DataType::Float64, SelectorOutput::Value),
-                selector_max(&DataType::Float64, SelectorOutput::Time),
-                "f64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_max_value(t.f64_value,t.time) | selector_max_time(t.f64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 5                                      | 1970-01-01 00:00:00.000005            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_max(&DataType::Int64, SelectorOutput::Value),
-                selector_max(&DataType::Int64, SelectorOutput::Time),
-                "i64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_max_value(t.i64_value,t.time) | selector_max_time(t.i64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 50                                     | 1970-01-01 00:00:00.000005            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_max(&DataType::UInt64, SelectorOutput::Value),
-                selector_max(&DataType::UInt64, SelectorOutput::Time),
-                "u64_value",
-                vec![
-                    "+----------------------------------------+---------------------------------------+",
-                    "| selector_max_value(t.u64_value,t.time) | selector_max_time(t.u64_value,t.time) |",
-                    "+----------------------------------------+---------------------------------------+",
-                    "| 50                                     | 1970-01-01 00:00:00.000005            |",
-                    "+----------------------------------------+---------------------------------------+",
-                ],
-            ),
-            (
-                selector_max(&DataType::Utf8, SelectorOutput::Value),
-                selector_max(&DataType::Utf8, SelectorOutput::Time),
-                "string_value",
-                vec![
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| selector_max_value(t.string_value,t.time) | selector_max_time(t.string_value,t.time) |",
-                    "+-------------------------------------------+------------------------------------------+",
-                    "| z_five                                    | 1970-01-01 00:00:00.000005               |",
-                    "+-------------------------------------------+------------------------------------------+",
-                ],
-            ),
-            (
-                selector_max(&DataType::Boolean, SelectorOutput::Value),
-                selector_max(&DataType::Boolean, SelectorOutput::Time),
-                "bool_value",
-                vec![
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| selector_max_value(t.bool_value,t.time) | selector_max_time(t.bool_value,t.time) |",
-                    "+-----------------------------------------+----------------------------------------+",
-                    "| true                                    | 1970-01-01 00:00:00.000001             |",
-                    "+-----------------------------------------+----------------------------------------+",
-                ],
-            )
-        ];
+    async fn test_selector_first_string() {
+        run_case(
+            selector_first().call(vec![col("string_value"), col("time")]),
+            vec![
+                "+------------------------------------------------------+",
+                "| first(t.string_value,t.time)                         |",
+                "+------------------------------------------------------+",
+                "| {\"value\": \"two\", \"time\": 1970-01-01 00:00:00.000001} |",
+                "+------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
 
-        for (val_func, time_func, val_column, expected) in cases.into_iter() {
-            let args = vec![col(val_column), col("time")];
-            let aggs = vec![val_func.call(args.clone()), time_func.call(args)];
-            let actual = run_plan(aggs).await;
+    #[tokio::test]
+    async fn test_selector_first_bool() {
+        run_case(
+            selector_first().call(vec![col("bool_value"), col("time")]),
+            vec![
+                "+-----------------------------------------------------+",
+                "| first(t.bool_value,t.time)                          |",
+                "+-----------------------------------------------------+",
+                "| {\"value\": true, \"time\": 1970-01-01 00:00:00.000001} |",
+                "+-----------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
 
-            assert_eq!(
-                expected, actual,
-                "\n\nEXPECTED:\n{:#?}\nACTUAL:\n{:#?}\n",
-                expected, actual
-            );
-        }
+    // Begin `last`
+
+    #[tokio::test]
+    async fn test_selector_last_f64() {
+        run_case(
+            selector_last().call(vec![col("f64_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------+",
+                "| last(t.f64_value,t.time)                         |",
+                "+--------------------------------------------------+",
+                "| {\"value\": 3, \"time\": 1970-01-01 00:00:00.000006} |",
+                "+--------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_last_i64() {
+        run_case(
+            selector_last().call(vec![col("i64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| last(t.i64_value,t.time)                          |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 30, \"time\": 1970-01-01 00:00:00.000006} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_last_u64() {
+        run_case(
+            selector_last().call(vec![col("u64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| last(t.u64_value,t.time)                          |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 30, \"time\": 1970-01-01 00:00:00.000006} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_last_string() {
+        run_case(
+            selector_last().call(vec![col("string_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------------+",
+                "| last(t.string_value,t.time)                            |",
+                "+--------------------------------------------------------+",
+                "| {\"value\": \"three\", \"time\": 1970-01-01 00:00:00.000006} |",
+                "+--------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_last_bool() {
+        run_case(
+            selector_last().call(vec![col("bool_value"), col("time")]),
+            vec![
+                "+------------------------------------------------------+",
+                "| last(t.bool_value,t.time)                            |",
+                "+------------------------------------------------------+",
+                "| {\"value\": false, \"time\": 1970-01-01 00:00:00.000006} |",
+                "+------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    // Begin `min`
+
+    #[tokio::test]
+    async fn test_selector_min_f64() {
+        run_case(
+            selector_min().call(vec![col("f64_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------+",
+                "| min(t.f64_value,t.time)                          |",
+                "+--------------------------------------------------+",
+                "| {\"value\": 1, \"time\": 1970-01-01 00:00:00.000004} |",
+                "+--------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_min_i64() {
+        run_case(
+            selector_min().call(vec![col("i64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| min(t.i64_value,t.time)                           |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 10, \"time\": 1970-01-01 00:00:00.000004} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_min_u64() {
+        run_case(
+            selector_min().call(vec![col("u64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| min(t.u64_value,t.time)                           |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 10, \"time\": 1970-01-01 00:00:00.000004} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_min_string() {
+        run_case(
+            selector_min().call(vec![col("string_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------------+",
+                "| min(t.string_value,t.time)                             |",
+                "+--------------------------------------------------------+",
+                "| {\"value\": \"a_one\", \"time\": 1970-01-01 00:00:00.000004} |",
+                "+--------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_min_bool() {
+        run_case(
+            selector_min().call(vec![col("bool_value"), col("time")]),
+            vec![
+                "+------------------------------------------------------+",
+                "| min(t.bool_value,t.time)                             |",
+                "+------------------------------------------------------+",
+                "| {\"value\": false, \"time\": 1970-01-01 00:00:00.000002} |",
+                "+------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    // Begin `max`
+
+    #[tokio::test]
+    async fn test_selector_max_f64() {
+        run_case(
+            selector_max().call(vec![col("f64_value"), col("time")]),
+            vec![
+                "+--------------------------------------------------+",
+                "| max(t.f64_value,t.time)                          |",
+                "+--------------------------------------------------+",
+                "| {\"value\": 5, \"time\": 1970-01-01 00:00:00.000005} |",
+                "+--------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_max_i64() {
+        run_case(
+            selector_max().call(vec![col("i64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| max(t.i64_value,t.time)                           |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 50, \"time\": 1970-01-01 00:00:00.000005} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_max_u64() {
+        run_case(
+            selector_max().call(vec![col("u64_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------+",
+                "| max(t.u64_value,t.time)                           |",
+                "+---------------------------------------------------+",
+                "| {\"value\": 50, \"time\": 1970-01-01 00:00:00.000005} |",
+                "+---------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_max_string() {
+        run_case(
+            selector_max().call(vec![col("string_value"), col("time")]),
+            vec![
+                "+---------------------------------------------------------+",
+                "| max(t.string_value,t.time)                              |",
+                "+---------------------------------------------------------+",
+                "| {\"value\": \"z_five\", \"time\": 1970-01-01 00:00:00.000005} |",
+                "+---------------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_selector_max_bool() {
+        run_case(
+            selector_max().call(vec![col("bool_value"), col("time")]),
+            vec![
+                "+-----------------------------------------------------+",
+                "| max(t.bool_value,t.time)                            |",
+                "+-----------------------------------------------------+",
+                "| {\"value\": true, \"time\": 1970-01-01 00:00:00.000001} |",
+                "+-----------------------------------------------------+",
+            ],
+        )
+        .await;
+    }
+
+    // Begin utility functions
+
+    /// Runs the expr using `run_plan` and compares the result to `expected`
+    async fn run_case(expr: Expr, expected: Vec<&'static str>) {
+        println!("Running case for {}", expr);
+
+        let actual = run_plan(expr.clone()).await;
+
+        assert_eq!(
+            expected, actual,
+            "\n\nexpr: {}\n\nEXPECTED:\n{:#?}\nACTUAL:\n{:#?}\n",
+            expr, expected, actual
+        );
     }
 
     /// Run a plan against the following input table as "t"
@@ -644,7 +746,9 @@ mod test {
     /// | 3         | 30        | 30        | three        | false      | 1970-01-01 00:00:00.000006 |,
     /// +-----------+-----------+--------------+------------+----------------------------+,
     /// ```
-    async fn run_plan(aggs: Vec<Expr>) -> Vec<String> {
+    ///
+    /// And returns the resulting RecordBatch as a formatted vec of strings
+    async fn run_plan(agg: Expr) -> Vec<String> {
         // define a schema for input
         // (value) and timestamp
         let schema = Arc::new(Schema::new(vec![
@@ -716,6 +820,8 @@ mod test {
         )
         .unwrap();
 
+        let aggs = vec![agg];
+
         // Ensure the answer is the same regardless of the order of inputs
         let input = vec![batch1, batch2, batch3];
         let input_string = pretty_format_batches(&input).unwrap();
@@ -730,14 +836,14 @@ mod test {
             assert_eq!(
                 results, p_results,
                 "Mismatch with permutation.\n\
-                        Input1 \n\n\
-                        {}\n\n\
-                        produces output:\n\n\
-                        {:#?}\n\n\
-                        Input 2\n\n\
-                        {}\n\n\
-                        produces output:\n\n\
-                        {:#?}\n\n",
+                 Input1 \n\n\
+                 {}\n\n\
+                 produces output:\n\n\
+                 {:#?}\n\n\
+                 Input 2\n\n\
+                 {}\n\n\
+                 produces output:\n\n\
+                 {:#?}\n\n",
                 input_string, results, p_input_string, p_results
             );
         }

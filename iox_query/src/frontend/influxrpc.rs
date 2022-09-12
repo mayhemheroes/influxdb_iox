@@ -18,6 +18,7 @@ use data_types::ChunkId;
 use datafusion::{
     error::DataFusionError,
     logical_plan::{col, when, DFSchemaRef, Expr, ExprSchemable, LogicalPlan, LogicalPlanBuilder},
+    scalar::ScalarValue,
 };
 use datafusion_util::AsExpr;
 use hashbrown::HashSet;
@@ -26,7 +27,7 @@ use predicate::{rpc_predicate::InfluxRpcPredicate, Predicate, PredicateMatch};
 use query_functions::{
     group_by::{Aggregate, WindowDuration},
     make_window_bound_expr,
-    selectors::{selector_first, selector_last, selector_max, selector_min, SelectorOutput},
+    selectors::{selector_first, selector_last, selector_max, selector_min},
 };
 use schema::{selection::Selection, InfluxColumnType, Schema, TIME_COLUMN_NAME};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -1460,7 +1461,6 @@ pub(crate) struct AggExprs {
 struct FieldExpr<'a> {
     expr: Expr,
     name: &'a str,
-    datatype: &'a DataType,
 }
 
 // Returns an iterator of fields from schema that pass the predicate. If there
@@ -1498,7 +1498,6 @@ fn filtered_fields_iter<'a>(
         Some(FieldExpr {
             expr: expr.alias(f.name()),
             name: f.name(),
-            datatype: f.data_type(),
         })
     })
 }
@@ -1562,7 +1561,7 @@ impl AggExprs {
             let field_name = field.name;
             agg_exprs.push(make_selector_expr(
                 agg,
-                SelectorOutput::Value,
+                SelectorOutputField::Value,
                 field.clone(),
                 field_name,
             )?);
@@ -1571,7 +1570,7 @@ impl AggExprs {
 
             agg_exprs.push(make_selector_expr(
                 agg,
-                SelectorOutput::Time,
+                SelectorOutputField::Time,
                 field,
                 &time_column_name,
             )?);
@@ -1606,7 +1605,6 @@ impl AggExprs {
                     agg,
                     FieldExpr {
                         expr: col(field.name()),
-                        datatype: field.data_type(),
                         name: field.name(),
                     },
                 )
@@ -1675,10 +1673,39 @@ fn make_agg_expr(agg: Aggregate, field_expr: FieldExpr<'_>) -> Result<Expr> {
         .map(|agg| agg.alias(field_name))
 }
 
+/// Represents selecting one of the two output fields (`value`, or `time`)
+#[derive(Debug)]
+enum SelectorOutputField {
+    Value,
+    Time,
+}
+
+impl SelectorOutputField {
+    /// Generates an `Expr` that represents selecting one field from a
+    /// struct.
+    ///
+    /// So for example, for `Self::Value`, and the input is
+    /// `selector_first(col, time)`, returns a function like
+    ///
+    /// selector_first(col, time)['value']
+    ///
+    fn select(&self, expr: Expr) -> Expr {
+        let col_name = match self {
+            Self::Value => "value",
+            Self::Time => TIME_COLUMN_NAME,
+        };
+
+        Expr::GetIndexedField {
+            expr: Box::new(expr),
+            key: ScalarValue::Utf8(Some(col_name.to_string())),
+        }
+    }
+}
+
 /// Creates a DataFusion expression suitable for calculating the time part of a
 /// selector:
 ///
-/// The output expression is equivalent to `CAST selector_time(field_expression)
+/// The output expression is equivalent to `selector_time(field_expression)
 /// as col_name`.
 ///
 /// In the simplest scenarios the field expressions are `Column` expressions.
@@ -1688,24 +1715,24 @@ fn make_agg_expr(agg: Aggregate, field_expr: FieldExpr<'_>) -> Result<Expr> {
 /// CAST selector_time(
 ///     CASE WHEN field = 1.87 OR field = 1.99 THEN field
 ///     ELSE NULL
-/// END) as col_name
+/// END)['value'] as col_name
 ///
 fn make_selector_expr<'a>(
     agg: Aggregate,
-    output: SelectorOutput,
+    selector_output_field: SelectorOutputField,
     field: FieldExpr<'a>,
     col_name: &'a str,
 ) -> Result<Expr> {
     let uda = match agg {
-        Aggregate::First => selector_first(field.datatype, output),
-        Aggregate::Last => selector_last(field.datatype, output),
-        Aggregate::Min => selector_min(field.datatype, output),
-        Aggregate::Max => selector_max(field.datatype, output),
+        Aggregate::First => selector_first(),
+        Aggregate::Last => selector_last(),
+        Aggregate::Min => selector_min(),
+        Aggregate::Max => selector_max(),
         _ => return InternalAggregateNotSelectorSnafu { agg }.fail(),
     };
 
-    Ok(uda
-        .call(vec![field.expr, col(TIME_COLUMN_NAME)])
+    Ok(selector_output_field
+        .select(uda.call(vec![field.expr, col(TIME_COLUMN_NAME)]))
         .alias(col_name))
 }
 
