@@ -78,6 +78,8 @@ static LOG_SETUP: Once = Once::new();
 /// Enables debug logging regardless of the value of RUST_LOG
 /// environment variable. If RUST_LOG isn't specifies, defaults to
 /// "debug"
+///
+/// Hint: try running your test with `--no-capture` if you don't see expected logs
 pub fn start_logging() {
     use tracing_log::LogTracer;
     use tracing_subscriber::{filter::EnvFilter, FmtSubscriber};
@@ -93,6 +95,10 @@ pub fn start_logging() {
 
         let subscriber = FmtSubscriber::builder()
             .with_env_filter(EnvFilter::from_default_env())
+            // Note `with_test_writer` allows cargo-test to capture
+            // logging (which may reorder / hide input) if you don't
+            // see your expected logs, try passing `--no-capture` to
+            // `cargo test`
             .with_test_writer()
             .finish();
 

@@ -118,6 +118,26 @@ async fn sql_select_from_restaurant() {
 }
 
 #[tokio::test]
+async fn sql_select_from_restaurant_selector() {
+    let expected = vec![
+        "+-------+--------------------------------+",
+        "| count | time                           |",
+        "+-------+--------------------------------+",
+        "| 40000 | 1970-01-01T00:00:00.000000100Z |",
+        "+-------+--------------------------------+",
+    ];
+    run_sql_test_case(
+        TwoMeasurementsUnsignedType {},
+        "SELECT \
+         selector_first(count, time)['value']  as count, \
+         selector_first(count, time)['time']  as time \
+         from restaurant",
+        &expected,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn sql_select_from_school() {
     let expected = vec![
         "+---------+-------+",

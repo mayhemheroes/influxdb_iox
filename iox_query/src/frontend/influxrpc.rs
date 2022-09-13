@@ -27,7 +27,7 @@ use predicate::{rpc_predicate::InfluxRpcPredicate, Predicate, PredicateMatch};
 use query_functions::{
     group_by::{Aggregate, WindowDuration},
     make_window_bound_expr,
-    selectors::{selector_first, selector_last, selector_max, selector_min},
+    selectors::{selector_first, selector_last, selector_max, selector_min, select_output_field, SelectorOutputField},
 };
 use schema::{selection::Selection, InfluxColumnType, Schema, TIME_COLUMN_NAME};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -1673,35 +1673,6 @@ fn make_agg_expr(agg: Aggregate, field_expr: FieldExpr<'_>) -> Result<Expr> {
         .map(|agg| agg.alias(field_name))
 }
 
-/// Represents selecting one of the two output fields (`value`, or `time`)
-#[derive(Debug)]
-enum SelectorOutputField {
-    Value,
-    Time,
-}
-
-impl SelectorOutputField {
-    /// Generates an `Expr` that represents selecting one field from a
-    /// struct.
-    ///
-    /// So for example, for `Self::Value`, and the input is
-    /// `selector_first(col, time)`, returns a function like
-    ///
-    /// selector_first(col, time)['value']
-    ///
-    fn select(&self, expr: Expr) -> Expr {
-        let col_name = match self {
-            Self::Value => "value",
-            Self::Time => TIME_COLUMN_NAME,
-        };
-
-        Expr::GetIndexedField {
-            expr: Box::new(expr),
-            key: ScalarValue::Utf8(Some(col_name.to_string())),
-        }
-    }
-}
-
 /// Creates a DataFusion expression suitable for calculating the time part of a
 /// selector:
 ///
@@ -1731,9 +1702,9 @@ fn make_selector_expr<'a>(
         _ => return InternalAggregateNotSelectorSnafu { agg }.fail(),
     };
 
-    Ok(selector_output_field
-        .select(uda.call(vec![field.expr, col(TIME_COLUMN_NAME)]))
-        .alias(col_name))
+    let expr = uda.call(vec![field.expr, col(TIME_COLUMN_NAME)]);
+    Ok(select_output_field(expr, selector_output_field)
+       .alias(col_name))
 }
 
 /// Orders chunks so it is likely that the ones that already have cached data are pulled first.

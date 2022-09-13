@@ -24,7 +24,7 @@ use datafusion::{
         AccumulatorFunctionImplementation, AggregateState, Signature, TypeSignature, Volatility,
     },
     physical_plan::{udaf::AggregateUDF, Accumulator},
-    scalar::ScalarValue,
+    scalar::ScalarValue, prelude::Expr,
 };
 
 // Internal implementations of the selector functions
@@ -36,7 +36,40 @@ use internal::{
     U64MaxSelector, U64MinSelector, Utf8FirstSelector, Utf8LastSelector, Utf8MaxSelector,
     Utf8MinSelector,
 };
-use schema::TIME_DATA_TYPE;
+use once_cell::sync::Lazy;
+use schema::{TIME_DATA_TYPE, TIME_COLUMN_NAME};
+
+
+/// Represents selecting one of the two output fields (`value`, or `time`)
+#[derive(Debug, Clone, Copy)]
+pub enum SelectorOutputField {
+    /// Select the "value" field from the struct returned by a selector
+    Value,
+    /// Select the "time" field from the struct returned by a selector
+    Time,
+}
+
+/// Generates an `Expr` that represents selecting one field from a
+/// struct.
+///
+/// So for example, for `SelectorOutputField::Value`, and the input is
+/// `selector_first(col, time)`, returns a function like
+///
+/// selector_first(col, time)['value']
+///
+pub fn select_output_field(expr: Expr, output_field: SelectorOutputField) -> Expr {
+    let col_name = match output_field {
+        SelectorOutputField::Value => "value",
+        SelectorOutputField::Time => TIME_COLUMN_NAME,
+    };
+
+    Expr::GetIndexedField {
+        expr: Box::new(expr),
+        key: ScalarValue::Utf8(Some(col_name.to_string())),
+    }
+}
+
+
 
 /// registers selector functions so they can be invoked via SQL
 pub fn register_selector_aggregates(mut state: SessionState) -> SessionState {
@@ -61,6 +94,8 @@ pub fn register_selector_aggregates(mut state: SessionState) -> SessionState {
     state
 }
 
+
+
 /// Returns a DataFusion user defined aggregate function for computing
 /// the first(value, time) selector function, returning a struct:
 ///
@@ -76,6 +111,10 @@ pub fn register_selector_aggregates(mut state: SessionState) -> SessionState {
 /// If there are multiple rows with the minimum timestamp value, the
 /// value is arbitrary
 pub fn selector_first() -> Arc<AggregateUDF> {
+    Arc::clone(&SELECTOR_FIRST)
+}
+
+static SELECTOR_FIRST: Lazy<Arc<AggregateUDF>> = Lazy::new(|| {
     let udaf = make_selector_udaf(
         "selector_first",
         Arc::new(|return_type| {
@@ -99,7 +138,8 @@ pub fn selector_first() -> Arc<AggregateUDF> {
         }),
     );
     Arc::new(udaf)
-}
+});
+
 
 /// Returns a DataFusion user defined aggregate function for computing
 /// the last(value, time) selector function, returning a struct:
@@ -116,6 +156,10 @@ pub fn selector_first() -> Arc<AggregateUDF> {
 /// If there are multiple rows with the maximum timestamp value, the
 /// value is arbitrary
 pub fn selector_last() -> Arc<AggregateUDF> {
+    Arc::clone(&SELECTOR_LAST)
+}
+
+static SELECTOR_LAST: Lazy<Arc<AggregateUDF>> = Lazy::new(|| {
     let udaf = make_selector_udaf(
         "selector_last",
         Arc::new(|return_type| {
@@ -139,7 +183,7 @@ pub fn selector_last() -> Arc<AggregateUDF> {
         }),
     );
     Arc::new(udaf)
-}
+});
 
 /// Returns a DataFusion user defined aggregate function for computing
 /// the min(value, time) selector function, returning a struct:
@@ -156,6 +200,10 @@ pub fn selector_last() -> Arc<AggregateUDF> {
 /// If there are multiple rows with the same minimum value, the value
 /// with the first (earliest/smallest) timestamp is chosen
 pub fn selector_min() -> Arc<AggregateUDF> {
+    Arc::clone(&SELECTOR_MIN)
+}
+
+static SELECTOR_MIN: Lazy<Arc<AggregateUDF>> = Lazy::new(|| {
     let udaf = make_selector_udaf(
         "selector_min",
         Arc::new(|return_type| {
@@ -179,7 +227,7 @@ pub fn selector_min() -> Arc<AggregateUDF> {
         }),
     );
     Arc::new(udaf)
-}
+});
 
 /// Returns a DataFusion user defined aggregate function for computing
 /// the max(value, time) selector function, returning a struct:
@@ -196,6 +244,10 @@ pub fn selector_min() -> Arc<AggregateUDF> {
 /// If there are multiple rows with the same maximum value, the value
 /// with the first (earliest/smallest) timestamp is chosen
 pub fn selector_max() -> Arc<AggregateUDF> {
+    Arc::clone(&SELECTOR_MAX)
+}
+
+static SELECTOR_MAX: Lazy<Arc<AggregateUDF>> = Lazy::new(|| {
     let udaf = make_selector_udaf(
         "selector_max",
         Arc::new(|return_type| {
@@ -219,7 +271,7 @@ pub fn selector_max() -> Arc<AggregateUDF> {
         }),
     );
     Arc::new(udaf)
-}
+});
 
 /// Implements the logic of the specific selector function (this is a
 /// cutdown version of the Accumulator DataFusion trait, to allow
@@ -716,6 +768,7 @@ mod test {
         )
         .await;
     }
+
 
     // Begin utility functions
 
