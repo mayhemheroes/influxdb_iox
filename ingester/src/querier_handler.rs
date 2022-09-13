@@ -5,18 +5,11 @@ use crate::data::{
     UnpersistedPartitionData,
 };
 use arrow::error::ArrowError;
-use datafusion::{
-    error::DataFusionError, logical_plan::LogicalPlanBuilder,
-    physical_plan::SendableRecordBatchStream,
-};
+use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion_util::MemoryStream;
 use futures::StreamExt;
 use generated_types::ingester::IngesterQueryRequest;
-use iox_query::{
-    exec::{Executor, ExecutorType},
-    QueryChunk, QueryChunkMeta, ScanPlanBuilder,
-};
 use observability_deps::tracing::debug;
-use predicate::Predicate;
 use schema::selection::Selection;
 use snafu::{ensure, ResultExt, Snafu};
 use std::sync::Arc;
@@ -24,29 +17,6 @@ use std::sync::Arc;
 #[derive(Debug, Snafu)]
 #[allow(missing_copy_implementations, missing_docs)]
 pub enum Error {
-    #[snafu(display("Error creating plan for querying Ingester data to send to Querier"))]
-    FrontendError {
-        source: iox_query::frontend::common::Error,
-    },
-
-    #[snafu(display("Error building logical plan for querying Ingester data to send to Querier"))]
-    LogicalPlan { source: DataFusionError },
-
-    #[snafu(display(
-        "Error building physical plan for querying Ingester data to send to Querier: {}",
-        source
-    ))]
-    PhysicalPlan { source: DataFusionError },
-
-    #[snafu(display(
-        "Error executing the query for getting Ingester data to send to Querier: {}",
-        source
-    ))]
-    ExecutePlan { source: DataFusionError },
-
-    #[snafu(display("Error collecting a stream of record batches: {}", source))]
-    CollectStream { source: DataFusionError },
-
     #[snafu(display(
         "No Namespace Data found for the given namespace name {}",
         namespace_name,
@@ -63,17 +33,11 @@ pub enum Error {
         table_name: String,
     },
 
-    #[snafu(display("Error concating same-schema record batches: {}", source))]
-    ConcatBatches { source: arrow::error::ArrowError },
-
-    #[snafu(display(
-        "Cannot apply identical schema to record batches of all partitions: {}",
-        source
-    ))]
-    InterPartitionSchemaApplication { source: arrow::error::ArrowError },
-
     #[snafu(display("Concurrent query request limit exceeded"))]
     RequestLimit,
+
+    #[snafu(display("Cannot query data: {}", source))]
+    Query { source: ArrowError },
 }
 
 /// A specialized `Error` for Ingester's Query errors
@@ -133,23 +97,20 @@ pub async fn prepare_data_to_querier(
         },
     );
 
-    let ingest_data = Arc::clone(ingest_data);
     let request = Arc::clone(request);
     let partitions = futures::stream::iter(unpersisted_partitions).then(move |partition| {
-        let ingest_data = Arc::clone(&ingest_data);
         let request = Arc::clone(&request);
 
         async move {
             // extract payload
             let partition_id = partition.partition_id;
             let status = partition.partition_status.clone();
-            let snapshots: Vec<_> =
-                prepare_data_to_querier_for_partition(ingest_data.exec(), partition, &request)
-                    .await
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)))?
-                    .into_iter()
-                    .map(Ok)
-                    .collect();
+            let snapshots: Vec<_> = prepare_data_to_querier_for_partition(partition, &request)
+                .await
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?
+                .into_iter()
+                .map(Ok)
+                .collect();
 
             // Note: include partition in `unpersisted_partitions` even when there we might filter out all the data, because
             // the metadata (e.g. max persisted parquet file) is important for the querier.
@@ -165,10 +126,9 @@ pub async fn prepare_data_to_querier(
 }
 
 async fn prepare_data_to_querier_for_partition(
-    executor: &Executor,
     unpersisted_partition_data: UnpersistedPartitionData,
     request: &IngesterQueryRequest,
-) -> Result<Option<SendableRecordBatchStream>> {
+) -> Result<Vec<SendableRecordBatchStream>> {
     // ------------------------------------------------
     // Accumulate data
 
@@ -179,7 +139,6 @@ async fn prepare_data_to_querier_for_partition(
     } else {
         Selection::Some(&selection_columns)
     };
-    let predicate = request.predicate.clone().unwrap_or_default();
 
     // figure out what batches
     let queryable_batch = unpersisted_partition_data
@@ -194,90 +153,35 @@ async fn prepare_data_to_querier_for_partition(
         })
         .with_data(unpersisted_partition_data.non_persisted);
 
-    // No data!
-    if queryable_batch.data.is_empty() {
-        return Ok(None);
-    }
+    let streams = queryable_batch
+        .data
+        .iter()
+        .map(|snapshot_batch| {
+            let batch = snapshot_batch.data.as_ref();
+            let schema = batch.schema();
 
-    query(
-        executor,
-        Arc::new(queryable_batch),
-        predicate.clone(),
-        selection,
-    )
-    .await
-    .map(Some)
-}
+            // Apply selection to in-memory batch
+            let batch = match selection {
+                Selection::All => batch.clone(),
+                Selection::Some(columns) => {
+                    let projection = columns
+                        .iter()
+                        .flat_map(|&column_name| {
+                            // ignore non-existing columns
+                            schema.index_of(column_name).ok()
+                        })
+                        .collect::<Vec<_>>();
+                    batch.project(&projection)?
+                }
+            };
 
-/// Query a given Queryable Batch, applying selection and filters as appropriate
-/// Return stream of record batches
-pub(crate) async fn query(
-    executor: &Executor,
-    data: Arc<QueryableBatch>,
-    predicate: Predicate,
-    selection: Selection<'_>,
-) -> Result<SendableRecordBatchStream> {
-    // Build logical plan for filtering data
-    // Note that this query will also apply the delete predicates that go with the QueryableBatch
+            // create stream
+            Ok(Box::pin(MemoryStream::new(vec![batch])) as SendableRecordBatchStream)
+        })
+        .collect::<std::result::Result<Vec<_>, ArrowError>>()
+        .context(QuerySnafu)?;
 
-    // TODO: Since we have different type of servers (router,
-    // ingester, compactor, and querier), we may want to add more
-    // types into the ExecutorType to have better log and resource
-    // managment
-    let ctx = executor.new_context(ExecutorType::Query);
-
-    // Creates an execution plan for a scan and filter data of a single chunk
-    let schema = data.schema();
-    let table_name = data.table_name().to_string();
-
-    debug!(%table_name, ?predicate, "Creating single chunk scan plan");
-
-    let logical_plan = ScanPlanBuilder::new(schema, ctx.child_ctx("scan_and_filter planning"))
-        .with_predicate(&predicate)
-        .with_chunks([data as _])
-        .build()
-        .context(FrontendSnafu)?
-        .plan_builder
-        .build()
-        .context(LogicalPlanSnafu)?;
-
-    debug!(%table_name, plan=%logical_plan.display_indent_schema(),
-           "created single chunk scan plan");
-
-    // Now, restrict to all columns that are relevant
-    let logical_plan = match selection {
-        Selection::All => logical_plan,
-        Selection::Some(cols) => {
-            // filter out columns that are not in the schema
-            let schema = Arc::clone(logical_plan.schema());
-            let cols = cols.iter().filter_map(|col_name| {
-                schema
-                    .index_of_column_by_name(None, col_name)
-                    .ok()
-                    .map(|_| datafusion::prelude::col(col_name))
-            });
-
-            LogicalPlanBuilder::from(logical_plan)
-                .project(cols)
-                .context(LogicalPlanSnafu)?
-                .build()
-                .context(LogicalPlanSnafu)?
-        }
-    };
-
-    // Build physical plan
-    let physical_plan = ctx
-        .create_physical_plan(&logical_plan)
-        .await
-        .context(PhysicalPlanSnafu {})?;
-
-    // Execute the plan and return the filtered stream
-    let output_stream = ctx
-        .execute_stream(physical_plan)
-        .await
-        .context(ExecutePlanSnafu {})?;
-
-    Ok(output_stream)
+    Ok(streams)
 }
 
 #[cfg(test)]
@@ -286,120 +190,16 @@ mod tests {
     use crate::{
         data::FlatIngesterQueryResponse,
         test_util::{
-            create_one_record_batch_with_influxtype_no_duplicates, create_tombstone,
-            make_ingester_data, make_ingester_data_with_tombstones, make_queryable_batch,
-            make_queryable_batch_with_deletes, DataLocation, TEST_NAMESPACE, TEST_TABLE,
+            make_ingester_data, make_ingester_data_with_tombstones, DataLocation, TEST_NAMESPACE,
+            TEST_TABLE,
         },
     };
     use arrow::record_batch::RecordBatch;
-    use arrow_util::{assert_batches_eq, assert_batches_sorted_eq};
+    use arrow_util::assert_batches_sorted_eq;
     use assert_matches::assert_matches;
     use datafusion::logical_plan::{col, lit};
     use futures::TryStreamExt;
     use predicate::Predicate;
-
-    #[tokio::test]
-    async fn test_query() {
-        test_helpers::maybe_start_logging();
-
-        // create input data
-        let batches = create_one_record_batch_with_influxtype_no_duplicates().await;
-
-        // build queryable batch from the input batches
-        let batch = make_queryable_batch("test_table", 0, 1, batches);
-
-        // query without filters
-        let exc = Executor::new(1);
-        let stream = query(&exc, batch, Predicate::default(), Selection::All)
-            .await
-            .unwrap();
-        let output_batches = datafusion::physical_plan::common::collect(stream)
-            .await
-            .unwrap();
-
-        // verify data: all rows and columns should be returned
-        let expected = vec![
-            "+-----------+------+-----------------------------+",
-            "| field_int | tag1 | time                        |",
-            "+-----------+------+-----------------------------+",
-            "| 70        | UT   | 1970-01-01T00:00:00.000020Z |",
-            "| 10        | VT   | 1970-01-01T00:00:00.000010Z |",
-            "| 1000      | WA   | 1970-01-01T00:00:00.000008Z |",
-            "+-----------+------+-----------------------------+",
-        ];
-        assert_batches_eq!(&expected, &output_batches);
-
-        exc.join().await;
-    }
-
-    #[tokio::test]
-    async fn test_query_with_filter() {
-        test_helpers::maybe_start_logging();
-
-        // create input data
-        let batches = create_one_record_batch_with_influxtype_no_duplicates().await;
-
-        // build queryable batch from the input batches
-        let batch = make_queryable_batch("test_table", 0, 1, batches);
-
-        // make filters
-        // Only read 2 columns: "tag1" and "time"
-        let selection = Selection::Some(&["tag1", "time"]);
-
-        // tag1=VT
-        let expr = col("tag1").eq(lit("VT"));
-        let pred = Predicate::default().with_expr(expr);
-
-        let exc = Executor::new(1);
-        let stream = query(&exc, batch, pred, selection).await.unwrap();
-        let output_batches = datafusion::physical_plan::common::collect(stream)
-            .await
-            .unwrap();
-
-        // verify data: 2  columns and one row of "tag1=VT" should be returned
-        let expected = vec![
-            "+------+-----------------------------+",
-            "| tag1 | time                        |",
-            "+------+-----------------------------+",
-            "| VT   | 1970-01-01T00:00:00.000010Z |",
-            "+------+-----------------------------+",
-        ];
-        assert_batches_eq!(&expected, &output_batches);
-
-        exc.join().await;
-    }
-
-    #[tokio::test]
-    async fn test_query_with_filter_with_delete() {
-        test_helpers::maybe_start_logging();
-
-        // create input data
-        let batches = create_one_record_batch_with_influxtype_no_duplicates().await;
-        let tombstones = vec![create_tombstone(1, 1, 1, 1, 0, 200000, "tag1=UT")];
-
-        // build queryable batch from the input batches
-        let batch = make_queryable_batch_with_deletes("test_table", 0, 1, batches, tombstones);
-
-        // make filters
-        // Only read 2 columns: "tag1" and "time"
-        let selection = Selection::Some(&["tag1", "time"]);
-
-        // tag1=UT
-        let expr = col("tag1").eq(lit("UT"));
-        let pred = Predicate::default().with_expr(expr);
-
-        let exc = Executor::new(1);
-        let stream = query(&exc, batch, pred, selection).await.unwrap();
-        let output_batches = datafusion::physical_plan::common::collect(stream)
-            .await
-            .unwrap();
-
-        // verify data: return nothing because the selected row already deleted
-        let expected = vec!["++", "++"];
-        assert_batches_eq!(&expected, &output_batches);
-
-        exc.join().await;
-    }
 
     #[tokio::test]
     async fn test_prepare_data_to_querier() {

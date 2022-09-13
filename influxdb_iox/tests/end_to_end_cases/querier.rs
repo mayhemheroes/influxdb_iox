@@ -294,8 +294,7 @@ async fn ingester_panic() {
                             .assert();
 
                         // The ingester is configured to fail 2 times, once for the original query and once during
-                        // debugging. The 2nd debug query should work and should only return data for `tag2=B` (not for
-                        // `tag2=C`).
+                        // debugging
                         if i == 0 {
                             assert.failure().stderr(predicate::str::contains(
                                 "Error querying: status: Internal, message: \"Panicking in `do_get` for testing purposes.\"",
@@ -304,8 +303,7 @@ async fn ingester_panic() {
                             assert.success().stdout(
                                 predicate::str::contains(
                                     "| A    | B    | 1970-01-01T00:00:00.000123456Z | 42  |",
-                                )
-                                .and(predicate::str::contains("C").not()),
+                                ),
                             );
                         }
                     }
