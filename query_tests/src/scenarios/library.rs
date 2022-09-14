@@ -608,8 +608,8 @@ fn one_measurement_four_chunks_with_duplicates() -> Vec<ChunkData<'static, 'stat
     ]
 }
 
-#[derive(Debug)]
 /// Setup for four chunks with duplicates for deduplicate tests
+#[derive(Debug)]
 pub struct OneMeasurementFourChunksWithDuplicates {}
 #[async_trait]
 impl DbSetup for OneMeasurementFourChunksWithDuplicates {
@@ -618,11 +618,11 @@ impl DbSetup for OneMeasurementFourChunksWithDuplicates {
     }
 }
 
-#[derive(Debug)]
 /// Setup for four chunks with duplicates for deduplicate tests.
 ///
 /// This is identical to [`OneMeasurementFourChunksWithDuplicates`] but only uses parquet files so it can be used for
 /// `EXPLAIN` plans.
+#[derive(Debug)]
 pub struct OneMeasurementFourChunksWithDuplicatesParquetOnly {}
 #[async_trait]
 impl DbSetup for OneMeasurementFourChunksWithDuplicatesParquetOnly {
@@ -631,6 +631,34 @@ impl DbSetup for OneMeasurementFourChunksWithDuplicatesParquetOnly {
             .into_iter()
             .map(|cd| ChunkData {
                 chunk_stage: Some(ChunkStage::Parquet),
+                ..cd
+            })
+            .collect();
+        make_n_chunks_scenario(&chunk_data).await
+    }
+}
+
+/// Setup for four chunks with duplicates for deduplicate tests.
+///
+/// This is identical to [`OneMeasurementFourChunksWithDuplicates`] but uses ingester data as well so it can be used for
+/// `EXPLAIN` plans.
+#[derive(Debug)]
+pub struct OneMeasurementFourChunksWithDuplicatesWithIngester {}
+#[async_trait]
+impl DbSetup for OneMeasurementFourChunksWithDuplicatesWithIngester {
+    async fn make(&self) -> Vec<DbScenario> {
+        let chunks = one_measurement_four_chunks_with_duplicates();
+        let n = chunks.len();
+
+        let chunk_data: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, cd)| ChunkData {
+                chunk_stage: Some(if i == (n - 1) {
+                    ChunkStage::Ingester
+                } else {
+                    ChunkStage::Parquet
+                }),
                 ..cd
             })
             .collect();
