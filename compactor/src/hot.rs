@@ -7,9 +7,7 @@ use metric::Attributes;
 use observability_deps::tracing::*;
 use std::sync::Arc;
 
-/// Hot compaction. Returns the number of compacted partitions.
-pub async fn compact(compactor: Arc<Compactor>) -> usize {
-    let compaction_type = "hot";
+async fn get_candidates_with_retry() -> {
     // Select hot partition candidates
     debug!(compaction_type, "start collecting partitions to compact");
     let attributes = Attributes::from(&[("partition_type", compaction_type)]);
@@ -45,6 +43,14 @@ pub async fn compact(compactor: Arc<Compactor>) -> usize {
     } else {
         debug!(n_candidates, compaction_type, "found compaction candidates");
     }
+
+}
+
+/// Hot compaction. Returns the number of compacted partitions.
+pub async fn compact(compactor: Arc<Compactor>) -> usize {
+    let compaction_type = "hot";
+
+    let candidates = get_candidates_with_retry().await;
 
     let start_time = compactor.time_provider.now();
 
