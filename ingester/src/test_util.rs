@@ -22,7 +22,9 @@ use uuid::Uuid;
 use crate::{
     data::{
         namespace::NamespaceData,
-        partition::{PartitionData, PersistingBatch, SnapshotBatch},
+        partition::{
+            resolver::MockPartitionProvider, PartitionData, PersistingBatch, SnapshotBatch,
+        },
         shard::ShardData,
         table::TableData,
         IngesterData,
@@ -692,11 +694,12 @@ pub fn make_ingester_data(two_partitions: bool, loc: DataLocation) -> IngesterDa
     let empty_tbl = Arc::new(tokio::sync::RwLock::new(TableData::new(
         empty_table_id,
         None,
+        Arc::new(MockPartitionProvider::default()),
     )));
-    let data_tbl = Arc::new(tokio::sync::RwLock::new(TableData::new_for_test(
+    let data_tbl = Arc::new(tokio::sync::RwLock::new(TableData::new(
         data_table_id,
         None,
-        partitions,
+        Arc::new(partitions),
     )));
     tables.insert(TEST_TABLE_EMPTY.to_string(), empty_tbl);
     tables.insert(TEST_TABLE.to_string(), data_tbl);
@@ -742,7 +745,7 @@ pub async fn make_ingester_data_with_tombstones(loc: DataLocation) -> IngesterDa
 
     // Two tables: one empty and one with data of one or two partitions
     let mut tables = BTreeMap::new();
-    let data_tbl = TableData::new_for_test(data_table_id, None, partitions);
+    let data_tbl = TableData::new(data_table_id, None, Arc::new(partitions));
     tables.insert(
         TEST_TABLE.to_string(),
         Arc::new(tokio::sync::RwLock::new(data_tbl)),
@@ -777,7 +780,7 @@ pub(crate) fn make_partitions(
     shard_id: ShardId,
     table_id: TableId,
     table_name: &str,
-) -> BTreeMap<PartitionKey, PartitionData> {
+) -> MockPartitionProvider {
     // In-memory data includes these rows but split between 4 groups go into
     // different batches of parittion 1 or partittion 2  as requeted
     // let expected = vec![
@@ -795,7 +798,7 @@ pub(crate) fn make_partitions(
     //         "+------------+-----+------+--------------------------------+",
     //     ];
 
-    let mut partitions = BTreeMap::new();
+    let mut partitions = MockPartitionProvider::default();
 
     // ------------------------------------------
     // Build the first partition
@@ -823,7 +826,7 @@ pub(crate) fn make_partitions(
         );
         p2.buffer_write(SequenceNumber::new(seq_num), mb).unwrap();
 
-        partitions.insert(PartitionKey::from(TEST_PARTITION_2), p2);
+        partitions.insert(PartitionKey::from(TEST_PARTITION_2), shard_id, table_id, p2);
     } else {
         // Group 4: in buffer of p1
         // Fill `buffer`
@@ -839,7 +842,7 @@ pub(crate) fn make_partitions(
         p1.buffer_write(SequenceNumber::new(seq_num), mb).unwrap();
     }
 
-    partitions.insert(PartitionKey::from(TEST_PARTITION_1), p1);
+    partitions.insert(PartitionKey::from(TEST_PARTITION_1), shard_id, table_id, p1);
     partitions
 }
 
@@ -850,7 +853,7 @@ pub(crate) async fn make_one_partition_with_tombstones(
     shard_id: ShardId,
     table_id: TableId,
     table_name: &str,
-) -> BTreeMap<PartitionKey, PartitionData> {
+) -> MockPartitionProvider {
     // In-memory data includes these rows but split between 4 groups go into
     // different batches of parittion 1 or partittion 2  as requeted
     // let expected = vec![
@@ -903,10 +906,12 @@ pub(crate) async fn make_one_partition_with_tombstones(
     );
     p1.buffer_write(SequenceNumber::new(seq_num), mb).unwrap();
 
-    let mut partitions = BTreeMap::new();
-    partitions.insert(PartitionKey::from(TEST_PARTITION_1), p1);
-
-    partitions
+    MockPartitionProvider::default().with_partition(
+        PartitionKey::from(TEST_PARTITION_1),
+        shard_id,
+        table_id,
+        p1,
+    )
 }
 
 fn make_first_partition_data(

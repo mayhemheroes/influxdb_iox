@@ -50,7 +50,7 @@ impl ShardData {
 
     /// Initialize new ShardData with namespace for testing purpose only
     #[cfg(test)]
-    pub fn new_for_test(
+    pub(crate) fn new_for_test(
         shard_index: ShardIndex,
         namespaces: BTreeMap<String, Arc<NamespaceData>>,
     ) -> Self {
@@ -70,14 +70,14 @@ impl ShardData {
         &self,
         dml_operation: DmlOperation,
         shard_id: ShardId,
-        catalog: &dyn Catalog,
+        catalog: &Arc<dyn Catalog>,
         lifecycle_handle: &dyn LifecycleHandle,
         executor: &Executor,
     ) -> Result<bool, super::Error> {
         let namespace_data = match self.namespace(dml_operation.namespace()) {
             Some(d) => d,
             None => {
-                self.insert_namespace(dml_operation.namespace(), catalog)
+                self.insert_namespace(dml_operation.namespace(), &**catalog)
                     .await?
             }
         };
@@ -88,7 +88,7 @@ impl ShardData {
     }
 
     /// Gets the namespace data out of the map
-    pub fn namespace(&self, namespace: &str) -> Option<Arc<NamespaceData>> {
+    pub(crate) fn namespace(&self, namespace: &str) -> Option<Arc<NamespaceData>> {
         let n = self.namespaces.read();
         n.get(namespace).cloned()
     }

@@ -15,6 +15,7 @@ use self::buffer::{BufferBatch, DataBuffer};
 use crate::{data::query_dedup::query, query::QueryableBatch};
 
 mod buffer;
+pub mod resolver;
 
 /// Read only copy of the unpersisted data for a partition in the ingester for a specific partition.
 #[derive(Debug)]
@@ -112,6 +113,7 @@ impl SnapshotBatch {
 #[derive(Debug)]
 pub(crate) struct PartitionData {
     id: PartitionId,
+
     pub(crate) data: DataBuffer,
 
     /// The max_persisted_sequence number for any parquet_file in this

@@ -17,14 +17,14 @@ use write_summary::ShardProgress;
 #[cfg(test)]
 use super::triggers::TestTriggers;
 use super::{
-    partition::{PersistingBatch, SnapshotBatch},
+    partition::{resolver::CatalogPartitionResolver, PersistingBatch, SnapshotBatch},
     table::TableData,
 };
 use crate::lifecycle::LifecycleHandle;
 
 /// Data of a Namespace that belongs to a given Shard
 #[derive(Debug)]
-pub struct NamespaceData {
+pub(crate) struct NamespaceData {
     namespace_id: NamespaceId,
     tables: RwLock<BTreeMap<String, Arc<tokio::sync::RwLock<TableData>>>>,
 
@@ -118,7 +118,7 @@ impl NamespaceData {
         &self,
         dml_operation: DmlOperation,
         shard_id: ShardId,
-        catalog: &dyn Catalog,
+        catalog: &Arc<dyn Catalog>,
         lifecycle_handle: &dyn LifecycleHandle,
         executor: &Executor,
     ) -> Result<bool, super::Error> {
@@ -160,7 +160,6 @@ impl NamespaceData {
                                 b,
                                 partition_key.clone(),
                                 shard_id,
-                                catalog,
                                 lifecycle_handle,
                             )
                             .await?;
@@ -187,7 +186,7 @@ impl NamespaceData {
                         delete.predicate(),
                         shard_id,
                         sequence_number,
-                        catalog,
+                        &**catalog,
                         executor,
                     )
                     .await?;
@@ -259,7 +258,7 @@ impl NamespaceData {
         &self,
         shard_id: ShardId,
         table_name: &str,
-        catalog: &dyn Catalog,
+        catalog: &Arc<dyn Catalog>,
     ) -> Result<Arc<tokio::sync::RwLock<TableData>>, super::Error> {
         let mut repos = catalog.repositories().await;
         let info = repos
@@ -271,11 +270,15 @@ impl NamespaceData {
 
         let mut t = self.tables.write();
 
+        // TODO: share this server-wide
+        let partition_provider = Arc::new(CatalogPartitionResolver::new(Arc::clone(catalog)));
+
         let data = match t.entry(table_name.to_string()) {
             Entry::Vacant(v) => {
                 let v = v.insert(Arc::new(tokio::sync::RwLock::new(TableData::new(
                     info.table_id,
                     info.tombstone_max_sequence_number,
+                    partition_provider,
                 ))));
                 self.table_count.inc(1);
                 Arc::clone(v)

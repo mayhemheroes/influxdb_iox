@@ -167,7 +167,7 @@ impl IngesterData {
             .buffer_operation(
                 dml_operation,
                 shard_id,
-                self.catalog.as_ref(),
+                &self.catalog,
                 lifecycle_handle,
                 &self.exec,
             )
@@ -1342,7 +1342,7 @@ mod tests {
             .buffer_operation(
                 DmlOperation::Write(w1),
                 shard.id,
-                catalog.as_ref(),
+                &catalog,
                 &manager.handle(),
                 &exec,
             )
@@ -1364,7 +1364,7 @@ mod tests {
         data.buffer_operation(
             DmlOperation::Write(w2),
             shard.id,
-            catalog.as_ref(),
+            &catalog,
             &manager.handle(),
             &exec,
         )

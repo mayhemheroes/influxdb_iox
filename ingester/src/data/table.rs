@@ -1,6 +1,6 @@
 //! Table level data buffer structures.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use data_types::{DeletePredicate, PartitionKey, SequenceNumber, ShardId, TableId, Timestamp};
 use iox_catalog::interface::Catalog;
@@ -9,7 +9,9 @@ use mutable_batch::MutableBatch;
 use snafu::ResultExt;
 use write_summary::ShardProgress;
 
-use super::partition::{PartitionData, PartitionStatus, UnpersistedPartitionData};
+use super::partition::{
+    resolver::PartitionProvider, PartitionData, PartitionStatus, UnpersistedPartitionData,
+};
 use crate::lifecycle::LifecycleHandle;
 
 /// Data of a Table in a given Namesapce that belongs to a given Shard
@@ -18,31 +20,36 @@ pub(crate) struct TableData {
     table_id: TableId,
     // the max sequence number for a tombstone associated with this table
     tombstone_max_sequence_number: Option<SequenceNumber>,
+
+    /// An abstract constructor of [`PartitionData`] instances for a given
+    /// `(key, shard, table)` triplet.
+    partition_provider: Arc<dyn PartitionProvider>,
+
     // Map pf partition key to its data
     pub(super) partition_data: BTreeMap<PartitionKey, PartitionData>,
 }
 
 impl TableData {
-    /// Initialize new table buffer
-    pub fn new(table_id: TableId, tombstone_max_sequence_number: Option<SequenceNumber>) -> Self {
-        Self {
-            table_id,
-            tombstone_max_sequence_number,
-            partition_data: Default::default(),
-        }
-    }
-
-    /// Initialize new table buffer for testing purpose only
-    #[cfg(test)]
-    pub fn new_for_test(
+    /// Initialize new table buffer identified by [`TableId`] in the catalog.
+    ///
+    /// Optionally the given tombstone max [`SequenceNumber`] identifies the
+    /// inclusive upper bound of tombstones associated with this table. Any data
+    /// greater than this value is guaranteed to not (yet) have a delete
+    /// tombstone that must be resolved.
+    ///
+    /// The partition provider is used to instantiate a [`PartitionData`]
+    /// instance when this [`TableData`] instance observes an op for a partition
+    /// for the first time.
+    pub fn new(
         table_id: TableId,
         tombstone_max_sequence_number: Option<SequenceNumber>,
-        partitions: BTreeMap<PartitionKey, PartitionData>,
+        partition_provider: Arc<dyn PartitionProvider>,
     ) -> Self {
         Self {
             table_id,
             tombstone_max_sequence_number,
-            partition_data: partitions,
+            partition_data: Default::default(),
+            partition_provider,
         }
     }
 
@@ -69,14 +76,19 @@ impl TableData {
         batch: MutableBatch,
         partition_key: PartitionKey,
         shard_id: ShardId,
-        catalog: &dyn Catalog,
         lifecycle_handle: &dyn LifecycleHandle,
     ) -> Result<bool, super::Error> {
         let partition_data = match self.partition_data.get_mut(&partition_key) {
             Some(p) => p,
             None => {
-                self.insert_partition(partition_key.clone(), shard_id, catalog)
-                    .await?;
+                let p = self
+                    .partition_provider
+                    .get_partition(partition_key.clone(), shard_id, self.table_id)
+                    .await;
+                // Add the partition to the map.
+                self.partition_data
+                    .insert(partition_key.clone(), p)
+                    .unwrap();
                 self.partition_data.get_mut(&partition_key).unwrap()
             }
         };
@@ -153,28 +165,6 @@ impl TableData {
                 },
             })
             .collect()
-    }
-
-    async fn insert_partition(
-        &mut self,
-        partition_key: PartitionKey,
-        shard_id: ShardId,
-        catalog: &dyn Catalog,
-    ) -> Result<(), super::Error> {
-        let partition = catalog
-            .repositories()
-            .await
-            .partitions()
-            .create_or_get(partition_key, shard_id, self.table_id)
-            .await
-            .context(super::CatalogSnafu)?;
-
-        self.partition_data.insert(
-            partition.partition_key,
-            PartitionData::new(partition.id, partition.persisted_sequence_number),
-        );
-
-        Ok(())
     }
 
     /// Return progress from this Table
