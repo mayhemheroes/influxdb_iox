@@ -33,6 +33,7 @@ mod literal;
 mod parameter;
 mod show;
 mod show_measurements;
+mod show_retention_policies;
 mod statement;
 mod string;
 

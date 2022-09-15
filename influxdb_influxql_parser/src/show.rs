@@ -1,5 +1,6 @@
 use crate::internal::{expect, ParseResult};
 use crate::show_measurements::show_measurements;
+use crate::show_retention_policies::show_retention_policies;
 use crate::Statement;
 use nom::branch::alt;
 use nom::bytes::complete::tag_no_case;
@@ -21,6 +22,7 @@ pub fn show_statement(i: &str) -> ParseResult<&str, Statement> {
                 map(show_measurements, |v| {
                     Statement::ShowMeasurements(Box::new(v))
                 }),
+                show_retention_policies,
             )),
         ),
     )(i)
@@ -44,11 +46,14 @@ mod test {
         let (_, got) = show_statement("SHOW MEASUREMENTS").unwrap();
         assert_eq!(format!("{}", got), "SHOW MEASUREMENTS");
 
-        // Fallible case
+        let (_, got) = show_statement("SHOW RETENTION POLICIES ON \"foo\"").unwrap();
+        assert_eq!(format!("{}", got), "SHOW RETENTION POLICIES ON foo");
+
+        // Fallible cases
 
         // Unsupported SHOW
         assert_expect_error!(
-            show_statement("SHOW TAG KEYS"),
+            show_statement("SHOW FOO"),
             "invalid SHOW statement, expected MEASUREMENTS"
         );
     }

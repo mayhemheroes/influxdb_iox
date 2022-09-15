@@ -1,3 +1,4 @@
+use crate::identifier::Identifier;
 use crate::internal::ParseResult;
 use crate::show::show_statement;
 use crate::show_measurements::ShowMeasurementsStatement;
@@ -10,6 +11,11 @@ pub enum Statement {
     ShowDatabases,
     /// Represents a `SHOW MEASUREMENTS` statement.
     ShowMeasurements(Box<ShowMeasurementsStatement>),
+    /// Represents a `SHOW RETENTION POLICIES` statement.
+    ShowRetentionPolicies {
+        /// Name of the database to list the retention policies, or all if this is `None`.
+        database: Option<Identifier>,
+    },
 }
 
 impl Display for Statement {
@@ -17,6 +23,12 @@ impl Display for Statement {
         match self {
             Self::ShowDatabases => f.write_str("SHOW DATABASES")?,
             Self::ShowMeasurements(s) => write!(f, "{}", s)?,
+            Self::ShowRetentionPolicies { database } => {
+                write!(f, "SHOW RETENTION POLICIES")?;
+                if let Some(database) = database {
+                    write!(f, " ON {}", database)?;
+                }
+            }
         };
 
         Ok(())
