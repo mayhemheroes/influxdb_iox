@@ -92,6 +92,18 @@ async fn hot_partitions_to_compact(
     let compaction_type = "hot";
     let mut candidates = Vec::with_capacity(compactor.shards.len() * max_num_partitions_per_shard);
 
+    // Get the most recent highest ingested throughput partitions within the last 4 hours. If not,
+    // increase to 24 hours. Query using `now() - num_hours` in nanoseconds.
+    let query_times: Vec<_> = [4, 24]
+        .iter()
+        .map(|num_hours| {
+            (num_hours, Timestamp::new(
+                (compactor.time_provider.now() - Duration::from_secs(60 * 60 * num_hours))
+                    .timestamp_nanos(),
+            ))
+        })
+        .collect();
+
     for shard_id in &compactor.shards {
         let attributes = Attributes::from([
             ("shard_id", format!("{}", *shard_id).into()),
@@ -99,21 +111,13 @@ async fn hot_partitions_to_compact(
         ]);
         let mut repos = compactor.catalog.repositories().await;
 
-        // Get the most recent highest ingested throughput partitions within
-        // the last 4 hours. If not, increase to 24 hours
         let mut num_partitions = 0;
-        for num_hours in [4, 24] {
-            // convert "now() - num_hours" to timenanosecond
-            let time_at_num_hours_ago = Timestamp::new(
-                (compactor.time_provider.now() - Duration::from_secs(60 * 60 * num_hours))
-                    .timestamp_nanos(),
-            );
-
+        for &(hours_ago, hours_ago_in_ns) in &query_times {
             let mut partitions = repos
                 .parquet_files()
                 .recent_highest_throughput_partitions(
                     *shard_id,
-                    time_at_num_hours_ago,
+                    hours_ago_in_ns,
                     min_recent_ingested_files,
                     max_num_partitions_per_shard,
                 )
@@ -126,7 +130,7 @@ async fn hot_partitions_to_compact(
             if !partitions.is_empty() {
                 debug!(
                     shard_id = shard_id.get(),
-                    num_hours,
+                    hours_ago,
                     n = partitions.len(),
                     "found high-throughput partitions"
                 );
