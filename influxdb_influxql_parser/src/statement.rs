@@ -6,6 +6,8 @@ use std::fmt::{Display, Formatter};
 /// An InfluxQL statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    /// Represents a `SHOW DATABASES` statement.
+    ShowDatabases,
     /// Represents a `SHOW MEASUREMENTS` statement.
     ShowMeasurements(Box<ShowMeasurementsStatement>),
 }
@@ -13,6 +15,7 @@ pub enum Statement {
 impl Display for Statement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ShowDatabases => f.write_str("SHOW DATABASES")?,
             Self::ShowMeasurements(s) => write!(f, "{}", s)?,
         };
 
