@@ -3,6 +3,7 @@ use crate::internal::ParseResult;
 use crate::show::show_statement;
 use crate::show_measurements::ShowMeasurementsStatement;
 use crate::show_tag_keys::ShowTagKeysStatement;
+use crate::show_tag_values::ShowTagValuesStatement;
 use std::fmt::{Display, Formatter};
 
 /// An InfluxQL statement.
@@ -19,6 +20,8 @@ pub enum Statement {
     },
     /// Represents a `SHOW TAG KEYS` statement.
     ShowTagKeys(Box<ShowTagKeysStatement>),
+    /// Represents a `SHOW TAG VALUES` statement.
+    ShowTagValues(Box<ShowTagValuesStatement>),
 }
 
 impl Display for Statement {
@@ -33,6 +36,7 @@ impl Display for Statement {
                 }
             }
             Self::ShowTagKeys(s) => write!(f, "{}", s)?,
+            Self::ShowTagValues(s) => write!(f, "{}", s)?,
         };
 
         Ok(())

@@ -35,6 +35,7 @@ mod show;
 mod show_measurements;
 mod show_retention_policies;
 mod show_tag_keys;
+mod show_tag_values;
 mod statement;
 mod string;
 

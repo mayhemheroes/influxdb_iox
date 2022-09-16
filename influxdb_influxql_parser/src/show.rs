@@ -4,6 +4,7 @@ use crate::internal::{expect, ParseResult};
 use crate::show_measurements::show_measurements;
 use crate::show_retention_policies::show_retention_policies;
 use crate::show_tag_keys::show_tag_keys;
+use crate::show_tag_values::show_tag_values;
 use crate::string::{regex, Regex};
 use crate::Statement;
 use nom::branch::alt;
@@ -20,7 +21,7 @@ pub fn show_statement(i: &str) -> ParseResult<&str, Statement> {
     preceded(
         pair(tag_no_case("SHOW"), multispace1),
         expect(
-            "invalid SHOW statement, expected MEASUREMENTS",
+            "invalid SHOW statement, expected MEASUREMENTS, TAG following SHOW",
             // NOTE: This will become an alt(()) once more statements are added
             alt((
                 // SHOW DATABASES
@@ -109,7 +110,7 @@ pub fn from_clause(i: &str) -> ParseResult<&str, FromMeasurementClause> {
                 tuple((
                     measurement_selection,
                     opt(preceded(
-                        pair(multispace1, char(',')),
+                        pair(multispace0, char(',')),
                         expect(
                             "invalid FROM clause, expected identifier after ,",
                             separated_list1(
@@ -139,8 +140,11 @@ fn show_tag(i: &str) -> ParseResult<&str, Statement> {
     preceded(
         pair(tag_no_case("TAG"), multispace1),
         expect(
-            "invalid SHOW TAG statement, expected KEYS",
-            map(show_tag_keys, |v| Statement::ShowTagKeys(Box::new(v))),
+            "invalid SHOW TAG statement, expected KEYS or VALUES following TAG",
+            alt((
+                map(show_tag_keys, |v| Statement::ShowTagKeys(Box::new(v))),
+                map(show_tag_values, |v| Statement::ShowTagValues(Box::new(v))),
+            )),
         ),
     )(i)
 }
@@ -166,12 +170,20 @@ mod test {
         let (_, got) = show_statement("SHOW TAG KEYS").unwrap();
         assert_eq!(format!("{}", got), "SHOW TAG KEYS");
 
+        let (_, got) = show_statement("SHOW TAG VALUES WITH KEY = some_key").unwrap();
+        assert_eq!(format!("{}", got), "SHOW TAG VALUES WITH KEY = some_key");
+
         // Fallible cases
+
+        assert_expect_error!(
+            show_statement("SHOW TAG FOO WITH KEY = some_key"),
+            "invalid SHOW TAG statement, expected KEYS or VALUES following TAG"
+        );
 
         // Unsupported SHOW
         assert_expect_error!(
             show_statement("SHOW FOO"),
-            "invalid SHOW statement, expected MEASUREMENTS"
+            "invalid SHOW statement, expected MEASUREMENTS, TAG following SHOW"
         );
     }
 }
