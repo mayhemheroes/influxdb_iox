@@ -2,6 +2,7 @@ use crate::identifier::Identifier;
 use crate::internal::ParseResult;
 use crate::show::show_statement;
 use crate::show_measurements::ShowMeasurementsStatement;
+use crate::show_tag_keys::ShowTagKeysStatement;
 use std::fmt::{Display, Formatter};
 
 /// An InfluxQL statement.
@@ -16,6 +17,8 @@ pub enum Statement {
         /// Name of the database to list the retention policies, or all if this is `None`.
         database: Option<Identifier>,
     },
+    /// Represents a `SHOW TAG KEYS` statement.
+    ShowTagKeys(Box<ShowTagKeysStatement>),
 }
 
 impl Display for Statement {
@@ -29,6 +32,7 @@ impl Display for Statement {
                     write!(f, " ON {}", database)?;
                 }
             }
+            Self::ShowTagKeys(s) => write!(f, "{}", s)?,
         };
 
         Ok(())
