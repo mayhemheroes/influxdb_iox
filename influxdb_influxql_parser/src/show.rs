@@ -71,11 +71,12 @@ impl fmt::Display for MeasurementSelection {
 ///
 /// A `FROM` clause for a `SHOW` statements differs from a `FROM` in a
 /// `SELECT`, as it can only contain measurement name or regular expressions.
+///
 /// It is defined by the following EBNF notation:
 ///
 /// ```text
 /// from_clause ::= "FROM" measurement_selection ("," measurement_selection)*
-/// measurement_selection ::=
+/// measurement_selection ::= three_part_measurement_name | regex
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FromMeasurementClause {
