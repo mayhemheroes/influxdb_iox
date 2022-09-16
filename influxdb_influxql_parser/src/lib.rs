@@ -25,6 +25,7 @@ use std::fmt::{Debug, Display, Formatter};
 mod test_util;
 
 mod common;
+mod delete;
 mod expression;
 mod identifier;
 mod internal;

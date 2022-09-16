@@ -1,4 +1,5 @@
 use crate::common::{measurement_name_expression, MeasurementNameExpression};
+use crate::identifier::{identifier, Identifier};
 use crate::internal::{expect, ParseResult};
 use crate::string::{regex, Regex};
 use nom::branch::alt;
@@ -41,8 +42,8 @@ impl<T: fmt::Display + Parser> fmt::Display for MeasurementSelection<T> {
 /// regular expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FromMeasurementClause<T: Parser> {
-    first: MeasurementSelection<T>,
-    rest: Option<Vec<MeasurementSelection<T>>>,
+    pub first: MeasurementSelection<T>,
+    pub rest: Option<Vec<MeasurementSelection<T>>>,
 }
 
 impl<T: fmt::Display + Parser> fmt::Display for FromMeasurementClause<T> {
@@ -102,6 +103,20 @@ pub type ShowFromClause = FromMeasurementClause<MeasurementNameExpression>;
 
 /// Parse a `FROM` clause for various `SHOW` statements.
 pub fn show_from_clause(i: &str) -> ParseResult<&str, ShowFromClause> {
+    from_clause(i)
+}
+
+impl Parser for Identifier {
+    fn parse(i: &str) -> ParseResult<&str, Self> {
+        identifier(i)
+    }
+}
+
+/// Represents a `FROM` clause for a `DELETE` statement.
+pub type DeleteFromClause = FromMeasurementClause<Identifier>;
+
+/// Parse a `FROM` clause for a `DELETE` statement.
+pub fn delete_from_clause(i: &str) -> ParseResult<&str, DeleteFromClause> {
     from_clause(i)
 }
 
@@ -173,5 +188,49 @@ mod test {
                 rest: Some(vec![Regex("reg".into())]),
             }
         );
+    }
+
+    #[test]
+    fn test_delete_from_clause() {
+        use crate::simple_from_clause::MeasurementSelection::*;
+
+        let (_, from) = delete_from_clause("FROM c").unwrap();
+        assert_eq!(
+            from,
+            DeleteFromClause {
+                first: Name("c".into()),
+                rest: None
+            }
+        );
+
+        let (_, from) = delete_from_clause("FROM /reg/").unwrap();
+        assert_eq!(
+            from,
+            DeleteFromClause {
+                first: Regex("reg".into()),
+                rest: None
+            }
+        );
+
+        let (_, from) = delete_from_clause("FROM c, /reg/").unwrap();
+        assert_eq!(
+            from,
+            DeleteFromClause {
+                first: Name("c".into()),
+                rest: Some(vec![Regex("reg".into())]),
+            }
+        );
+
+        // Demonstrate that the 3-part name is not parsed
+        let (i, from) = delete_from_clause("FROM a.b.c").unwrap();
+        assert_eq!(
+            from,
+            DeleteFromClause {
+                first: Name("a".into()),
+                rest: None,
+            }
+        );
+        // The remaining input will fail in a later parser
+        assert_eq!(i, ".b.c");
     }
 }
