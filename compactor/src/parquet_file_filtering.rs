@@ -28,19 +28,19 @@ pub(crate) enum FilterResult {
     },
 }
 
-/// Given a list of level N files sorted by max sequence number and a list of level N + 1 files for
-/// a partition, select a subset set of files that:
+/// Given a list of sorted level N files and a list of level N + 1 files for a partition, select a
+/// subset set of files that:
 ///
 /// - Has a subset of the level N files selected, from the start of the sorted level N list
 /// - Has a total size less than `max_bytes`
 /// - Has only level N + 1 files that overlap in time with the level N files
 ///
 /// The returned files will be ordered with the level N + 1 files first, then the level N files
-/// ordered in ascending order by their max sequence number.
+/// in the same order as they were in the input.
 pub(crate) fn filter_parquet_files(
     // partition of the parquet files
     partition: Arc<PartitionCompactionCandidateWithInfo>,
-    // Level N files sorted by max sequence number
+    // Level N files, sorted
     level_n: Vec<CompactorParquetFile>,
     // Level N + 1 files
     level_n_plus_1: Vec<CompactorParquetFile>,
@@ -67,7 +67,7 @@ pub(crate) fn filter_parquet_files(
 }
 
 fn filter_parquet_files_inner(
-    // Level N files sorted by max sequence number
+    // Level N files, sorted
     level_n: Vec<CompactorParquetFile>,
     // Level N + 1 files
     mut remaining_level_n_plus_1: Vec<CompactorParquetFile>,
@@ -199,8 +199,8 @@ fn filter_parquet_files_inner(
         ln_plus_1_estimated_budget,
     );
 
-    // Return the level N+1 files first, followed by the level N files, assuming we've maintained
-    // their ordering by max sequence number.
+    // Return the level N+1 files first, followed by the level N files. The order is arbitrary;
+    // ordering for deduplication happens using `QueryChunk.order`.
     files_to_return.extend(level_n_to_return);
 
     FilterResult::Proceed {
