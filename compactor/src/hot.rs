@@ -95,18 +95,7 @@ async fn hot_partitions_to_compact(
 
     // Get the most recent highest ingested throughput partitions within the last 4 hours. If not,
     // increase to 24 hours. Query using `now() - num_hours` in nanoseconds.
-    let query_times: Vec<_> = [4, 24]
-        .iter()
-        .map(|&num_hours| {
-            (
-                num_hours,
-                Timestamp::new(
-                    (compactor.time_provider.now() - Duration::from_secs(60 * 60 * num_hours))
-                        .timestamp_nanos(),
-                ),
-            )
-        })
-        .collect();
+    let query_times = query_times(compactor.time_provider.now());
 
     for &shard_id in &compactor.shards {
         let mut partitions = hot_partitions_for_shard(
@@ -207,6 +196,18 @@ async fn hot_partitions_for_shard(
     }
 
     Ok(Vec::new())
+}
+
+fn query_times(now: iox_time::Time) -> Vec<(u64, Timestamp)> {
+    [4, 24]
+        .iter()
+        .map(|&num_hours| {
+            (
+                num_hours,
+                Timestamp::new((now - Duration::from_secs(60 * 60 * num_hours)).timestamp_nanos()),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
