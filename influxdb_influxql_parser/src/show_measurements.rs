@@ -7,7 +7,7 @@
 use crate::internal::{expect, ParseResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};
-use nom::character::complete::{char, multispace1};
+use nom::character::complete::{char, multispace0, multispace1};
 use nom::combinator::{map, opt, value};
 use nom::sequence::tuple;
 use nom::sequence::{pair, preceded, terminated};
@@ -127,29 +127,29 @@ fn with_measurement_clause(i: &str) -> ParseResult<&str, MeasurementExpression> 
                 "invalid WITH clause, expected MEASUREMENT",
                 tag_no_case("MEASUREMENT"),
             ),
-            multispace1,
+            multispace0,
         )),
         expect(
             "expected = or =~",
             alt((
                 map(
                     tuple((
+                        tag("=~"),
+                        multispace0,
+                        expect("expected regex literal", regex),
+                    )),
+                    |(_, _, regex)| MeasurementExpression::Regex(regex),
+                ),
+                map(
+                    tuple((
                         char('='),
-                        multispace1,
+                        multispace0,
                         expect(
                             "expected measurement name or wildcard",
                             measurement_name_expression,
                         ),
                     )),
                     |(_, _, name)| MeasurementExpression::Equals(name),
-                ),
-                map(
-                    tuple((
-                        tag("=~"),
-                        multispace1,
-                        expect("expected regex literal", regex),
-                    )),
-                    |(_, _, regex)| MeasurementExpression::Regex(regex),
                 ),
             )),
         ),
@@ -348,6 +348,21 @@ mod test {
         );
 
         let (_, got) = with_measurement_clause("WITH measurement =~ /foo/").unwrap();
+        assert_eq!(got, MeasurementExpression::Regex(Regex("foo".into())));
+
+        // Expressions are still valid when whitespace is omitted
+
+        let (_, got) = with_measurement_clause("WITH measurement=foo..bar").unwrap();
+        assert_eq!(
+            got,
+            MeasurementExpression::Equals(MeasurementNameExpression {
+                database: Some("foo".into()),
+                retention_policy: None,
+                name: "bar".into()
+            })
+        );
+
+        let (_, got) = with_measurement_clause("WITH measurement=~/foo/").unwrap();
         assert_eq!(got, MeasurementExpression::Regex(Regex("foo".into())));
 
         // Fallible cases
