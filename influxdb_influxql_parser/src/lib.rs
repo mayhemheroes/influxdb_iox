@@ -32,6 +32,7 @@ mod keywords;
 mod literal;
 mod parameter;
 mod show;
+mod show_field_keys;
 mod show_measurements;
 mod show_retention_policies;
 mod show_tag_keys;

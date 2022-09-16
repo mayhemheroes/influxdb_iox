@@ -1,6 +1,7 @@
 use crate::common::{measurement_name_expression, MeasurementNameExpression};
 use crate::identifier::{identifier, Identifier};
 use crate::internal::{expect, ParseResult};
+use crate::show_field_keys::show_field_keys;
 use crate::show_measurements::show_measurements;
 use crate::show_retention_policies::show_retention_policies;
 use crate::show_tag_keys::show_tag_keys;
@@ -26,6 +27,8 @@ pub fn show_statement(i: &str) -> ParseResult<&str, Statement> {
             alt((
                 // SHOW DATABASES
                 show_databases,
+                // SHOW FIELD KEYS
+                map(show_field_keys, |v| Statement::ShowFieldKeys(Box::new(v))),
                 // SHOW MEASUREMENTS
                 map(show_measurements, |v| {
                     Statement::ShowMeasurements(Box::new(v))
@@ -160,6 +163,9 @@ mod test {
 
         let (_, got) = show_statement("SHOW DATABASES").unwrap();
         assert_eq!(format!("{}", got), "SHOW DATABASES");
+
+        let (_, got) = show_statement("SHOW FIELD KEYS").unwrap();
+        assert_eq!(format!("{}", got), "SHOW FIELD KEYS");
 
         let (_, got) = show_statement("SHOW MEASUREMENTS").unwrap();
         assert_eq!(format!("{}", got), "SHOW MEASUREMENTS");

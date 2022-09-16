@@ -1,6 +1,7 @@
 use crate::identifier::Identifier;
 use crate::internal::ParseResult;
 use crate::show::show_statement;
+use crate::show_field_keys::ShowFieldKeysStatement;
 use crate::show_measurements::ShowMeasurementsStatement;
 use crate::show_tag_keys::ShowTagKeysStatement;
 use crate::show_tag_values::ShowTagValuesStatement;
@@ -22,6 +23,8 @@ pub enum Statement {
     ShowTagKeys(Box<ShowTagKeysStatement>),
     /// Represents a `SHOW TAG VALUES` statement.
     ShowTagValues(Box<ShowTagValuesStatement>),
+    /// Represents a `SHOW FIELD KEYS` statement.
+    ShowFieldKeys(Box<ShowFieldKeysStatement>),
 }
 
 impl Display for Statement {
@@ -37,6 +40,7 @@ impl Display for Statement {
             }
             Self::ShowTagKeys(s) => write!(f, "{}", s)?,
             Self::ShowTagValues(s) => write!(f, "{}", s)?,
+            Self::ShowFieldKeys(s) => write!(f, "{}", s)?,
         };
 
         Ok(())
