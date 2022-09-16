@@ -86,9 +86,10 @@ impl TableData {
                     .get_partition(partition_key.clone(), shard_id, self.table_id)
                     .await;
                 // Add the partition to the map.
-                self.partition_data
+                assert!(self
+                    .partition_data
                     .insert(partition_key.clone(), p)
-                    .unwrap();
+                    .is_none());
                 self.partition_data.get_mut(&partition_key).unwrap()
             }
         };

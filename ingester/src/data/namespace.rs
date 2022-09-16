@@ -199,6 +199,7 @@ impl NamespaceData {
 
     /// Snapshots the mutable buffer for the partition, which clears it out and moves it over to
     /// snapshots. Then return a vec of the snapshots and the optional persisting batch.
+    #[allow(dead_code)]
     pub async fn snapshot(
         &self,
         table_name: &str,
