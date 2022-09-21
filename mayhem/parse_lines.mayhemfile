@@ -1,0 +1,7 @@
+project: influxdb-iox
+target: parse-lines
+
+cmds:
+  - cmd: /parse_lines
+  - cmd: /parse_lines_no_inst @@
+    libfuzzer: false
