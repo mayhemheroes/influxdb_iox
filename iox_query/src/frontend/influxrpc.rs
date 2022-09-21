@@ -31,11 +31,7 @@ use query_functions::{
 };
 use schema::{selection::Selection, InfluxColumnType, Schema, TIME_COLUMN_NAME};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
-use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{cmp::Reverse, collections::BTreeSet, sync::Arc};
 
 const CONCURRENT_TABLE_JOBS: usize = 10;
 
@@ -286,13 +282,10 @@ impl InfluxRpcPlanner {
                         .table_schema(table_name)
                         .context(TableRemovedSnafu { table_name })?;
 
-                    let plan = Self::table_name_plan(
-                        ctx.child_ctx("table name plan"),
-                        table_name,
-                        schema,
-                        predicate,
-                        chunks,
-                    )?;
+                    let mut ctx = ctx.child_ctx("table name plan");
+                    ctx.set_metadata("table", table_name.to_owned());
+
+                    let plan = Self::table_name_plan(ctx, table_name, schema, predicate, chunks)?;
                     builder = builder.append_other(plan.into());
                 }
             }
@@ -307,7 +300,7 @@ impl InfluxRpcPlanner {
     /// conditions specified by `predicate`.
     pub async fn tag_keys(
         &self,
-        database: &dyn QueryDatabase,
+        database: Arc<dyn QueryDatabase>,
         rpc_predicate: InfluxRpcPredicate,
     ) -> Result<StringSetPlan> {
         let ctx = self.ctx.child_ctx("tag_keys planning");
@@ -323,139 +316,137 @@ impl InfluxRpcPlanner {
         // 2. For each table/chunk pair, figure out which can be found
         // from only metadata and which need full plans
 
-        // Key is table name, value is set of chunks which had data
-        // for that table but that we couldn't evaluate the predicate
-        // entirely using the metadata
-        let mut need_full_plans = BTreeMap::new();
-        let mut known_columns = BTreeSet::new();
-
         let table_predicates = rpc_predicate
             .table_predicates(database.as_meta())
             .context(CreatingPredicatesSnafu)?;
-        for (table_name, predicate) in &table_predicates {
+
+        let mut table_predicates_need_chunks = vec![];
+        let mut builder = StringSetPlanBuilder::new();
+        for (table_name, predicate) in table_predicates {
             if predicate.is_empty() {
                 // special case - return the columns from metadata only.
                 // Note that columns with all rows deleted will still show here
-                known_columns.extend(
+                builder = builder.append_other(
                     database
-                        .table_schema(table_name)
+                        .table_schema(&table_name)
                         .context(TableRemovedSnafu { table_name })?
                         .tags_iter()
-                        .map(|f| f.name().clone()),
+                        .map(|f| f.name().clone())
+                        .collect::<BTreeSet<_>>()
+                        .into(),
                 );
-                continue;
-            }
-
-            let chunks = database
-                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
-                .await
-                .context(GettingChunksSnafu { table_name })?;
-            for chunk in cheap_chunk_first(chunks) {
-                // If there are delete predicates, we need to scan (or do full plan) the data to eliminate
-                // deleted data before getting tag keys
-                let mut do_full_plan = chunk.has_delete_predicates();
-
-                // Try and apply the predicate using only metadata
-                let pred_result = chunk.apply_predicate_to_metadata(predicate).context(
-                    CheckingChunkPredicateSnafu {
-                        chunk_id: chunk.id(),
-                    },
-                )?;
-
-                if matches!(pred_result, PredicateMatch::Zero) {
-                    continue;
-                }
-
-                // get only tag columns from metadata
-                let schema = chunk.schema();
-
-                let column_names: Vec<&str> = schema
-                    .tags_iter()
-                    .map(|f| f.name().as_str())
-                    .collect::<Vec<&str>>();
-
-                let selection = Selection::Some(&column_names);
-
-                if !do_full_plan {
-                    // filter the columns further from the predicate
-                    let maybe_names = chunk
-                        .column_names(
-                            ctx.child_ctx("column_names execution"),
-                            predicate,
-                            selection,
-                        )
-                        .context(FindingColumnNamesSnafu)?;
-
-                    match maybe_names {
-                        Some(mut names) => {
-                            debug!(
-                                %table_name,
-                                names=?names,
-                                chunk_id=%chunk.id().get(),
-                                "column names found from metadata",
-                            );
-                            known_columns.append(&mut names);
-                        }
-                        None => {
-                            do_full_plan = true;
-                        }
-                    }
-                }
-
-                // can't get columns only from metadata, need
-                // a general purpose plan
-                if do_full_plan {
-                    debug!(
-                        %table_name,
-                        chunk_id=%chunk.id().get(),
-                        "column names need full plan"
-                    );
-
-                    need_full_plans
-                        .entry(table_name)
-                        .or_insert_with(Vec::new)
-                        .push(Arc::clone(&chunk));
-                }
+            } else {
+                table_predicates_need_chunks.push((table_name, predicate));
             }
         }
 
-        let mut builder = StringSetPlanBuilder::new();
+        let tables: Vec<_> =
+            table_chunk_stream(Arc::clone(&database), &table_predicates_need_chunks, &ctx)
+                .and_then(|(table_name, predicate, chunks)| {
+                    let mut ctx = ctx.child_ctx("table");
+                    ctx.set_metadata("table", table_name.to_owned());
+
+                    async move {
+                        let mut chunks_full = vec![];
+                        let mut known_columns = BTreeSet::new();
+
+                        for chunk in cheap_chunk_first(chunks) {
+                            // Try and apply the predicate using only metadata
+                            let pred_result = chunk
+                                .apply_predicate_to_metadata(predicate)
+                                .context(CheckingChunkPredicateSnafu {
+                                    chunk_id: chunk.id(),
+                                })?;
+
+                            if matches!(pred_result, PredicateMatch::Zero) {
+                                continue;
+                            }
+
+                            // get only tag columns from metadata
+                            let schema = chunk.schema();
+
+                            let column_names: Vec<&str> = schema
+                                .tags_iter()
+                                .map(|f| f.name().as_str())
+                                .collect::<Vec<&str>>();
+
+                            let selection = Selection::Some(&column_names);
+
+                            // If there are delete predicates, we need to scan (or do full plan) the data to eliminate
+                            // deleted data before getting tag keys
+                            if chunk.has_delete_predicates() {
+                                debug!(
+                                    %table_name,
+                                    chunk_id=%chunk.id().get(),
+                                    "column names need full plan"
+                                );
+                                chunks_full.push(chunk);
+                            } else {
+                                // filter the columns further from the predicate
+                                let maybe_names = chunk
+                                    .column_names(
+                                        ctx.child_ctx("column_names execution"),
+                                        predicate,
+                                        selection,
+                                    )
+                                    .context(FindingColumnNamesSnafu)?;
+
+                                match maybe_names {
+                                    Some(mut names) => {
+                                        debug!(
+                                            %table_name,
+                                            names=?names,
+                                            chunk_id=%chunk.id().get(),
+                                            "column names found from metadata",
+                                        );
+                                        known_columns.append(&mut names);
+                                    }
+                                    None => {
+                                        debug!(
+                                            %table_name,
+                                            chunk_id=%chunk.id().get(),
+                                            "column names need full plan"
+                                        );
+                                        chunks_full.push(chunk);
+                                    }
+                                }
+                            }
+                        }
+
+                        Ok((table_name, predicate, chunks_full, known_columns))
+                    }
+                })
+                .try_collect()
+                .await?;
 
         // At this point, we have a set of column names we know pass
         // in `known_columns`, and potentially some tables in chunks
         // that we need to run a plan to know if they pass the
         // predicate.
-        if !need_full_plans.is_empty() {
-            // TODO an additional optimization here would be to filter
-            // out chunks (and tables) where all columns in that chunk
-            // were already known to have data (based on the contents of known_columns)
+        for (table_name, predicate, chunks_full, known_columns) in tables {
+            builder = builder.append_other(known_columns.into());
 
-            for (table_name, predicate) in &table_predicates {
-                if let Some(chunks) = need_full_plans.remove(table_name) {
-                    let schema = database
-                        .table_schema(table_name)
-                        .context(TableRemovedSnafu { table_name })?;
+            if !chunks_full.is_empty() {
+                // TODO an additional optimization here would be to filter
+                // out chunks (and tables) where all columns in that chunk
+                // were already known to have data (based on the contents of known_columns)
 
-                    let plan = self.tag_keys_plan(
-                        ctx.child_ctx("tag_keys_plan"),
-                        table_name,
-                        schema,
-                        predicate,
-                        chunks,
-                    )?;
+                let schema = database
+                    .table_schema(table_name)
+                    .context(TableRemovedSnafu { table_name })?;
 
-                    if let Some(plan) = plan {
-                        builder = builder.append_other(plan)
-                    }
+                let mut ctx = ctx.child_ctx("tag_keys_plan");
+                ctx.set_metadata("table", table_name.to_owned());
+
+                let plan = self.tag_keys_plan(ctx, table_name, schema, predicate, chunks_full)?;
+
+                if let Some(plan) = plan {
+                    builder = builder.append_other(plan)
                 }
             }
         }
 
-        // add the known columns we could find from metadata only
-        builder
-            .append_other(known_columns.into())
-            .build()
-            .context(CreatingStringSetSnafu)
+        builder.build().context(CreatingStringSetSnafu)
     }
 
     /// Returns a plan which finds the distinct, non-null tag values
@@ -463,7 +454,7 @@ impl InfluxRpcPlanner {
     /// the conditions specified by `predicate`.
     pub async fn tag_values(
         &self,
-        database: &dyn QueryDatabase,
+        database: Arc<dyn QueryDatabase>,
         tag_name: &str,
         rpc_predicate: InfluxRpcPredicate,
     ) -> Result<StringSetPlan> {
@@ -478,107 +469,122 @@ impl InfluxRpcPlanner {
         // distinct values that can be found from only metadata and
         // which need full plans
 
-        // Key is table name, value is set of chunks which had data
-        // for that table but that we couldn't evaluate the predicate
-        // entirely using the metadata
-        let mut need_full_plans = BTreeMap::new();
-        let mut known_values = BTreeSet::new();
-
         let table_predicates = rpc_predicate
             .table_predicates(database.as_meta())
             .context(CreatingPredicatesSnafu)?;
-        for (table_name, predicate) in &table_predicates {
-            let chunks = database
-                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
-                .await
-                .context(GettingChunksSnafu { table_name })?;
-            for chunk in cheap_chunk_first(chunks) {
-                // If there are delete predicates, we need to scan (or do full plan) the data to eliminate
-                // deleted data before getting tag values
-                let mut do_full_plan = chunk.has_delete_predicates();
 
-                // Try and apply the predicate using only metadata
-                let pred_result = chunk.apply_predicate_to_metadata(predicate).context(
-                    CheckingChunkPredicateSnafu {
-                        chunk_id: chunk.id(),
-                    },
-                )?;
+        // filter out tables that do NOT contain `tag_name` early, esp. before performing any chunk scan (which includes
+        // ingester RPC)
+        let mut table_predicates_filtered = Vec::with_capacity(table_predicates.len());
+        for (table_name, predicate) in table_predicates {
+            let schema = database
+                .table_schema(&table_name)
+                .context(TableRemovedSnafu {
+                    table_name: &table_name,
+                })?;
 
-                if matches!(pred_result, PredicateMatch::Zero) {
-                    continue;
-                }
+            // Skip this table if the tag_name is not a column in this table
+            if schema.find_index_of(tag_name).is_none() {
+                continue;
+            };
 
-                // use schema to validate column type
-                let schema = chunk.schema();
+            table_predicates_filtered.push((table_name, predicate));
+        }
 
-                // Skip this table if the tag_name is not a column in this table
-                let idx = if let Some(idx) = schema.find_index_of(tag_name) {
-                    idx
-                } else {
-                    continue;
-                };
+        let tables: Vec<_> =
+            table_chunk_stream(Arc::clone(&database), &table_predicates_filtered, &ctx)
+                .and_then(|(table_name, predicate, chunks)| async move {
+                    let mut chunks_full = vec![];
+                    let mut known_values = BTreeSet::new();
 
-                // Validate that this really is a Tag column
-                let (influx_column_type, field) = schema.field(idx);
-                ensure!(
-                    matches!(influx_column_type, Some(InfluxColumnType::Tag)),
-                    InvalidTagColumnSnafu {
-                        tag_name,
-                        influx_column_type,
-                    }
-                );
-                ensure!(
-                    influx_column_type
-                        .unwrap()
-                        .valid_arrow_type(field.data_type()),
-                    InternalInvalidTagTypeSnafu {
-                        tag_name,
-                        data_type: field.data_type().clone(),
-                    }
-                );
+                    for chunk in cheap_chunk_first(chunks) {
+                        // Try and apply the predicate using only metadata
+                        let pred_result = chunk.apply_predicate_to_metadata(predicate).context(
+                            CheckingChunkPredicateSnafu {
+                                chunk_id: chunk.id(),
+                            },
+                        )?;
 
-                if !do_full_plan {
-                    // try and get the list of values directly from metadata
-                    let maybe_values = chunk
-                        .column_values(
-                            self.ctx.child_ctx("tag_values execution"),
-                            tag_name,
-                            predicate,
-                        )
-                        .context(FindingColumnValuesSnafu)?;
+                        if matches!(pred_result, PredicateMatch::Zero) {
+                            continue;
+                        }
 
-                    match maybe_values {
-                        Some(mut names) => {
+                        // use schema to validate column type
+                        let schema = chunk.schema();
+
+                        // Skip this table if the tag_name is not a column in this chunk
+                        // Note: This may happen even when the table contains the tag_name, because some chunks may not
+                        //       contain all columns.
+                        let idx = if let Some(idx) = schema.find_index_of(tag_name) {
+                            idx
+                        } else {
+                            continue;
+                        };
+
+                        // Validate that this really is a Tag column
+                        let (influx_column_type, field) = schema.field(idx);
+                        ensure!(
+                            matches!(influx_column_type, Some(InfluxColumnType::Tag)),
+                            InvalidTagColumnSnafu {
+                                tag_name,
+                                influx_column_type,
+                            }
+                        );
+                        ensure!(
+                            influx_column_type
+                                .unwrap()
+                                .valid_arrow_type(field.data_type()),
+                            InternalInvalidTagTypeSnafu {
+                                tag_name,
+                                data_type: field.data_type().clone(),
+                            }
+                        );
+
+                        // If there are delete predicates, we need to scan (or do full plan) the data to eliminate
+                        // deleted data before getting tag values
+                        if chunk.has_delete_predicates() {
                             debug!(
                                 %table_name,
-                                names=?names,
                                 chunk_id=%chunk.id().get(),
-                                "tag values found from metadata",
+                                "need full plan to find tag values"
                             );
-                            known_values.append(&mut names);
-                        }
-                        None => {
-                            do_full_plan = true;
+
+                            chunks_full.push(chunk);
+                        } else {
+                            // try and get the list of values directly from metadata
+                            let mut ctx = self.ctx.child_ctx("tag_values execution");
+                            ctx.set_metadata("table", table_name.to_owned());
+
+                            let maybe_values = chunk
+                                .column_values(ctx, tag_name, predicate)
+                                .context(FindingColumnValuesSnafu)?;
+
+                            match maybe_values {
+                                Some(mut names) => {
+                                    debug!(
+                                        %table_name,
+                                        names=?names,
+                                        chunk_id=%chunk.id().get(),
+                                        "tag values found from metadata",
+                                    );
+                                    known_values.append(&mut names);
+                                }
+                                None => {
+                                    debug!(
+                                        %table_name,
+                                        chunk_id=%chunk.id().get(),
+                                        "need full plan to find tag values"
+                                    );
+                                    chunks_full.push(chunk);
+                                }
+                            }
                         }
                     }
-                }
 
-                // can't get columns only from metadata, need
-                // a general purpose plan
-                if do_full_plan {
-                    debug!(
-                        %table_name,
-                        chunk_id=%chunk.id().get(),
-                        "need full plan to find tag values"
-                    );
-
-                    need_full_plans
-                        .entry(table_name)
-                        .or_insert_with(Vec::new)
-                        .push(Arc::clone(&chunk));
-                }
-            }
-        }
+                    Ok((table_name, predicate, chunks_full, known_values))
+                })
+                .try_collect()
+                .await?;
 
         let mut builder = StringSetPlanBuilder::new();
 
@@ -587,17 +593,21 @@ impl InfluxRpcPlanner {
         // At this point, we have a set of tag_values we know at plan
         // time in `known_columns`, and some tables in chunks that we
         // need to run a plan to find what values pass the predicate.
-        for (table_name, predicate) in &table_predicates {
-            if let Some(chunks) = need_full_plans.remove(table_name) {
+        for (table_name, predicate, chunks_full, known_values) in tables {
+            builder = builder.append_other(known_values.into());
+
+            if !chunks_full.is_empty() {
                 let schema = database
                     .table_schema(table_name)
                     .context(TableRemovedSnafu { table_name })?;
 
-                let scan_and_filter =
-                    ScanPlanBuilder::new(schema, ctx.child_ctx("scan_and_filter planning"))
-                        .with_chunks(chunks)
-                        .with_predicate(predicate)
-                        .build()?;
+                let mut ctx = ctx.child_ctx("scan_and_filter planning");
+                ctx.set_metadata("table", table_name.to_owned());
+
+                let scan_and_filter = ScanPlanBuilder::new(schema, ctx)
+                    .with_chunks(chunks_full)
+                    .with_predicate(predicate)
+                    .build()?;
 
                 let tag_name_is_not_null = Expr::Column(tag_name.into()).is_not_null();
 
@@ -624,11 +634,7 @@ impl InfluxRpcPlanner {
             }
         }
 
-        // add the known values we could find from metadata only
-        builder
-            .append_other(known_values.into())
-            .build()
-            .context(CreatingStringSetSnafu)
+        builder.build().context(CreatingStringSetSnafu)
     }
 
     /// Returns a plan that produces a list of columns and their
@@ -637,7 +643,7 @@ impl InfluxRpcPlanner {
     /// specified by `predicate`.
     pub async fn field_columns(
         &self,
-        database: &dyn QueryDatabase,
+        database: Arc<dyn QueryDatabase>,
         rpc_predicate: InfluxRpcPredicate,
     ) -> Result<FieldListPlan> {
         let ctx = self.ctx.child_ctx("field_columns planning");
@@ -655,14 +661,15 @@ impl InfluxRpcPlanner {
         let table_predicates = rpc_predicate
             .table_predicates(database.as_meta())
             .context(CreatingPredicatesSnafu)?;
-        let mut field_list_plan = FieldListPlan::new();
 
-        for (table_name, predicate) in &table_predicates {
+        // optimization: just get the field columns from metadata.
+        // note this both ignores field keys, and sets the timestamp data 'incorrectly'.
+        let mut field_list_plan = FieldListPlan::new();
+        let mut table_predicates_need_chunks = Vec::with_capacity(table_predicates.len());
+        for (table_name, predicate) in table_predicates {
             if predicate.is_empty() {
-                // optimization: just get the field columns from metadata.
-                // note this both ignores field keys, and sets the timestamp data 'incorrectly'.
                 let schema = database
-                    .table_schema(table_name)
+                    .table_schema(&table_name)
                     .context(TableRemovedSnafu { table_name })?;
                 let fields = schema.fields_iter().map(|f| Field {
                     name: f.name().clone(),
@@ -672,29 +679,27 @@ impl InfluxRpcPlanner {
                 for field in fields {
                     field_list_plan.append_field(field);
                 }
-                continue;
+            } else {
+                table_predicates_need_chunks.push((table_name, predicate));
             }
-            let chunks = database
-                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
-                .await
-                .context(GettingChunksSnafu { table_name })?;
-            let chunks = prune_chunks_metadata(chunks, predicate)?;
+        }
 
-            if chunks.is_empty() {
-                continue;
-            }
-
-            let schema = database
-                .table_schema(table_name)
-                .context(TableRemovedSnafu { table_name })?;
-
-            let plan = self.field_columns_plan(
-                ctx.child_ctx("field_columns plan"),
-                schema,
-                predicate,
-                chunks,
-            )?;
-
+        // full scans
+        let plans = create_plans(
+            database,
+            &table_predicates_need_chunks,
+            ctx,
+            |ctx, _table_name, predicate, chunks, schema| {
+                Self::field_columns_plan(
+                    ctx.child_ctx("field_columns plan"),
+                    schema,
+                    predicate,
+                    chunks,
+                )
+            },
+        )
+        .await?;
+        for plan in plans {
             field_list_plan = field_list_plan.append_other(plan.into());
         }
 
@@ -727,9 +732,13 @@ impl InfluxRpcPlanner {
         let ctx = self.ctx.child_ctx("planning_read_filter");
         debug!(?rpc_predicate, "planning read_filter");
 
-        create_series_set_plans(
+        let table_predicates = rpc_predicate
+            .table_predicates(database.as_meta())
+            .context(CreatingPredicatesSnafu)?;
+
+        let plans = create_plans(
             database,
-            rpc_predicate,
+            &table_predicates,
             ctx,
             |ctx, table_name, predicate, chunks, schema| {
                 Self::read_filter_plan(
@@ -741,7 +750,9 @@ impl InfluxRpcPlanner {
                 )
             },
         )
-        .await
+        .await?;
+
+        Ok(SeriesSetPlans::new(plans))
     }
 
     /// Creates one or more GroupedSeriesSet plans that produces an
@@ -774,9 +785,13 @@ impl InfluxRpcPlanner {
         let ctx = self.ctx.child_ctx("read_group planning");
         debug!(?rpc_predicate, ?agg, "planning read_group");
 
-        let plan = create_series_set_plans(
+        let table_predicates = rpc_predicate
+            .table_predicates(database.as_meta())
+            .context(CreatingPredicatesSnafu)?;
+
+        let plans = create_plans(
             database,
-            rpc_predicate,
+            &table_predicates,
             ctx,
             |ctx, table_name, predicate, chunks, schema| match agg {
                 Aggregate::None => Self::read_filter_plan(
@@ -805,7 +820,7 @@ impl InfluxRpcPlanner {
             .map(|s| Arc::from(s.as_ref()))
             .collect();
 
-        Ok(plan.grouped_by(group_columns))
+        Ok(SeriesSetPlans::new(plans).grouped_by(group_columns))
     }
 
     /// Creates a GroupedSeriesSet plan that produces an output table with rows
@@ -827,9 +842,13 @@ impl InfluxRpcPlanner {
             "planning read_window_aggregate"
         );
 
-        create_series_set_plans(
+        let table_predicates = rpc_predicate
+            .table_predicates(database.as_meta())
+            .context(CreatingPredicatesSnafu)?;
+
+        let plans = create_plans(
             database,
-            rpc_predicate,
+            &table_predicates,
             ctx,
             |ctx, table_name, predicate, chunks, schema| {
                 Self::read_window_aggregate_plan(
@@ -844,7 +863,9 @@ impl InfluxRpcPlanner {
                 )
             },
         )
-        .await
+        .await?;
+
+        Ok(SeriesSetPlans::new(plans))
     }
 
     /// Creates a DataFusion LogicalPlan that returns column *names* as a
@@ -922,7 +943,6 @@ impl InfluxRpcPlanner {
     ///        Scan
     /// ```
     fn field_columns_plan(
-        &self,
         ctx: IOxSessionContext,
         schema: Arc<Schema>,
         predicate: &Predicate,
@@ -1298,12 +1318,14 @@ fn table_chunk_stream<'a>(
 ) -> impl Stream<Item = Result<(&'a str, &'a Predicate, Vec<Arc<dyn QueryChunk>>)>> + 'a {
     futures::stream::iter(table_predicates)
         .map(move |(table_name, predicate)| {
-            let ctx = ctx.child_ctx("table chunks");
+            let mut ctx = ctx.child_ctx("table");
+            ctx.set_metadata("table", table_name.clone());
+
             let database = Arc::clone(&database);
 
             async move {
                 let chunks = database
-                    .chunks(table_name, predicate, ctx)
+                    .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                     .await
                     .context(GettingChunksSnafu { table_name })?;
 
@@ -1313,16 +1335,21 @@ fn table_chunk_stream<'a>(
         .buffered(CONCURRENT_TABLE_JOBS)
 }
 
-/// Create series set plans that fetch the data specified in rpc_predicate.
+/// Create plans that fetch the data specified in table_predicates.
+///
+/// table_predicates contains `(table_name, predicate_specialized_for_that_table)`
+///
+/// The plans are created in parallel as different `async` Tasks to reduce
+/// query latency due to planning
 ///
 /// `f(ctx, table_name, table_predicate, chunks, table_schema)` is
-///  invoked on the chunks for each table to produce the final `SeriesSetPlan`
-async fn create_series_set_plans<F>(
+///  invoked on the chunks for each table to produce a plan for each
+async fn create_plans<F, P>(
     database: Arc<dyn QueryDatabase>,
-    rpc_predicate: InfluxRpcPredicate,
+    table_predicates: &[(String, Predicate)],
     ctx: IOxSessionContext,
     f: F,
-) -> Result<SeriesSetPlans>
+) -> Result<Vec<P>>
 where
     F: for<'a> Fn(
             &'a IOxSessionContext,
@@ -1330,16 +1357,13 @@ where
             &'a Predicate,
             Vec<Arc<dyn QueryChunk>>,
             Arc<Schema>,
-        ) -> Result<SeriesSetPlan>
+        ) -> Result<P>
         + Clone
         + Send
         + Sync,
+    P: Send,
 {
-    let table_predicates = rpc_predicate
-        .table_predicates(database.as_meta())
-        .context(CreatingPredicatesSnafu)?;
-
-    let ss_plans: Vec<_> = table_chunk_stream(Arc::clone(&database), &table_predicates, &ctx)
+    table_chunk_stream(Arc::clone(&database), table_predicates, &ctx)
         .and_then(|(table_name, predicate, chunks)| async move {
             let chunks = prune_chunks_metadata(chunks, predicate)?;
             Ok((table_name, predicate, chunks))
@@ -1351,7 +1375,9 @@ where
                 as Result<Option<(&str, &Predicate, Vec<_>)>>
         })
         .and_then(|(table_name, predicate, chunks)| {
-            let ctx = &ctx;
+            let mut ctx = ctx.child_ctx("table");
+            ctx.set_metadata("table", table_name.to_owned());
+
             let database = Arc::clone(&database);
             let f = f.clone();
 
@@ -1360,13 +1386,11 @@ where
                     .table_schema(table_name)
                     .context(TableRemovedSnafu { table_name })?;
 
-                f(ctx, table_name, predicate, chunks, schema)
+                f(&ctx, table_name, predicate, chunks, schema)
             }
         })
         .try_collect()
-        .await?;
-
-    Ok(SeriesSetPlans::new(ss_plans))
+        .await
 }
 
 /// Prunes the provided list of chunks using [`QueryChunk::apply_predicate_to_metadata`]
@@ -1765,7 +1789,7 @@ mod tests {
         run_test(|test_db, rpc_predicate| {
             async move {
                 InfluxRpcPlanner::new(IOxSessionContext::with_testing())
-                    .tag_keys(test_db.as_ref(), rpc_predicate)
+                    .tag_keys(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
             }
@@ -1779,7 +1803,7 @@ mod tests {
         run_test(|test_db, rpc_predicate| {
             async move {
                 InfluxRpcPlanner::new(IOxSessionContext::with_testing())
-                    .tag_values(test_db.as_ref(), "foo", rpc_predicate)
+                    .tag_values(test_db, "foo", rpc_predicate)
                     .await
                     .expect("creating plan");
             }
@@ -1793,7 +1817,7 @@ mod tests {
         run_test(|test_db, rpc_predicate| {
             async move {
                 InfluxRpcPlanner::new(IOxSessionContext::with_testing())
-                    .field_columns(test_db.as_ref(), rpc_predicate)
+                    .field_columns(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
             }

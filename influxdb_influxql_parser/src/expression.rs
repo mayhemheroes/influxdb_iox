@@ -460,10 +460,33 @@ mod test {
         let (_, got) = conditional_expression("2 | 5 % 3").unwrap();
         assert_eq!(got, *binary_op!(2, BitwiseOr, binary_op!(5, Mod, 3)));
 
+        // Expressions are still valid when unnecessary whitespace is omitted
+
+        let (_, got) = conditional_expression("5+51").unwrap();
+        assert_eq!(got, *binary_op!(5, Add, 51));
+
+        let (_, got) = conditional_expression("5+$foo").unwrap();
+        assert_eq!(got, *binary_op!(5, Add, param!("foo")));
+
+        let (_, got) = conditional_expression("5- -(3|2)").unwrap();
+        assert_eq!(
+            got,
+            *binary_op!(5, Sub, unary!(-nested!(binary_op!(3, BitwiseOr, 2))))
+        );
+
+        // whitespace is not significant between unary operators
+        let (_, got) = conditional_expression("5+-(3|2)").unwrap();
+        assert_eq!(
+            got,
+            *binary_op!(5, Add, unary!(-nested!(binary_op!(3, BitwiseOr, 2))))
+        );
+
         // Fallible cases
 
         // invalid operator / incomplete expression
         assert_failure!(conditional_expression("5 || 3"));
+        // TODO: skip until https://github.com/influxdata/influxdb_iox/issues/5663 is implemented
+        // assert_failure!(conditional_expression("5+--(3|2)"));
     }
 
     #[test]
@@ -495,6 +518,14 @@ mod test {
         // simple expressions
         let (_, got) = conditional_expression("true").unwrap();
         assert_eq!(got, Expr::Literal(true.into()));
+
+        // Expressions are still valid when whitespace is omitted
+
+        let (_, got) = conditional_expression("foo>5+6 ").unwrap();
+        assert_eq!(got, *binary_op!(ident!("foo"), Gt, binary_op!(5, Add, 6)));
+
+        let (_, got) = conditional_expression("5<=-6").unwrap();
+        assert_eq!(got, *binary_op!(5, LtEq, unary!(-6)));
 
         // Fallible cases
 
@@ -544,6 +575,11 @@ mod test {
 
         let (_, got) = conditional_expression("foo !~ /bar/").unwrap();
         assert_eq!(got, *binary_op!(ident!("foo"), NotEqRegex, regex!("bar")));
+
+        // Expressions are still valid when whitespace is omitted
+
+        let (_, got) = conditional_expression("foo=~/(a > b)/").unwrap();
+        assert_eq!(got, *binary_op!(ident!("foo"), EqRegex, regex!("(a > b)")));
 
         // Fallible cases
 

@@ -21,12 +21,19 @@ use iox_time::{SystemProvider, TimeProvider};
 use observability_deps::tracing::{debug, info, warn};
 use snafu::prelude::*;
 use sqlx::{
-    migrate::Migrator, postgres::PgPoolOptions, types::Uuid, Acquire, Executor, Postgres, Row,
+    migrate::Migrator,
+    postgres::{PgConnectOptions, PgPoolOptions},
+    types::Uuid,
+    Acquire, ConnectOptions, Executor, Postgres, Row,
 };
 use sqlx_hotswap_pool::HotSwapPool;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
 static MIGRATOR: Migrator = sqlx::migrate!();
+
+/// Maximum number of files deleted by [`ParquetFileRepo::delete_old_ids_only].
+const MAX_PARQUET_FILES_DELETED_ONCE: i64 = 1_000;
 
 /// Postgres connection options.
 #[derive(Debug, Clone)]
@@ -330,6 +337,11 @@ async fn new_raw_pool(
     options: &PostgresConnectionOptions,
     parsed_dsn: &str,
 ) -> Result<sqlx::Pool<Postgres>, sqlx::Error> {
+    // sqlx exposes some options as pool options, while other options are available as connection options.
+    let mut connect_options = PgConnectOptions::from_str(parsed_dsn)?;
+    // the default is INFO, which is frankly surprising.
+    connect_options.log_statements(log::LevelFilter::Trace);
+
     let app_name = options.app_name.clone();
     let app_name2 = options.app_name.clone(); // just to log below
     let schema_name = options.schema_name.clone();
@@ -363,7 +375,7 @@ async fn new_raw_pool(
                 Ok(())
             })
         })
-        .connect(parsed_dsn)
+        .connect_with(connect_options)
         .await?;
 
     // Log a connection was successfully established and include the application
@@ -422,7 +434,14 @@ async fn new_pool(
                         Ok(None)
                     } else {
                         let new_pool = new_raw_pool(options, &new_dsn).await?;
-                        pool.replace(new_pool);
+                        let old_pool = pool.replace(new_pool);
+                        info!("replaced hotswap pool");
+                        info!(?old_pool, "closing old DB connection pool");
+                        // The pool is not closed on drop. We need to call `close`.
+                        // It will close all idle connections, and wait until acquired connections
+                        // are returned to the pool or closed.
+                        old_pool.close().await;
+                        info!(?old_pool, "closed old DB connection pool");
                         Ok(Some(new_dsn))
                     }
                 }
@@ -430,7 +449,6 @@ async fn new_pool(
                 match try_update(&options, &current_dsn, &dsn_file, &pool).await {
                     Ok(None) => {}
                     Ok(Some(new_dsn)) => {
-                        info!("replaced hotswap pool");
                         current_dsn = new_dsn;
                     }
                     Err(e) => {
@@ -1609,7 +1627,7 @@ RETURNING *;
     }
 
     async fn flag_for_delete(&mut self, id: ParquetFileId) -> Result<()> {
-        let marked_at = Timestamp::new(self.time_provider.now().timestamp_nanos());
+        let marked_at = Timestamp::from(self.time_provider.now());
 
         let _ = sqlx::query(r#"UPDATE parquet_file SET to_delete = $1 WHERE id = $2;"#)
             .bind(&marked_at) // $1
@@ -1704,14 +1722,22 @@ RETURNING *;
     }
 
     async fn delete_old_ids_only(&mut self, older_than: Timestamp) -> Result<Vec<ParquetFileId>> {
+        // see https://www.crunchydata.com/blog/simulating-update-or-delete-with-limit-in-postgres-ctes-to-the-rescue
         let deleted = sqlx::query(
             r#"
+WITH parquet_file_ids as (
+    SELECT id
+    FROM parquet_file
+    WHERE to_delete < $1
+    LIMIT $2
+)
 DELETE FROM parquet_file
-WHERE to_delete < $1
+WHERE id IN (SELECT id FROM parquet_file_ids)
 RETURNING id;
              "#,
         )
         .bind(&older_than) // $1
+        .bind(&MAX_PARQUET_FILES_DELETED_ONCE) // $2
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })?;
@@ -2892,7 +2918,7 @@ mod tests {
         // parquet file to create- all we care about here is the size, the rest is to satisfy DB
         // constraints
         let time_provider = Arc::new(SystemProvider::new());
-        let time_now = Timestamp::new(time_provider.now().timestamp_nanos());
+        let time_now = Timestamp::from(time_provider.now());
         let mut p1 = ParquetFileParams {
             shard_id,
             namespace_id,
@@ -2951,7 +2977,7 @@ mod tests {
         assert_eq!(total_file_size_bytes, 1337 * 2);
 
         // actually deleting shouldn't change the total
-        let now = Timestamp::new((time_provider.now()).timestamp_nanos());
+        let now = Timestamp::from(time_provider.now());
         postgres
             .repositories()
             .await

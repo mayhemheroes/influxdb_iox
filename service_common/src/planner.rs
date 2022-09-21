@@ -80,7 +80,7 @@ impl Planner {
         self.ctx
             .run(async move {
                 planner
-                    .tag_keys(database.as_ref(), predicate)
+                    .tag_keys(database, predicate)
                     .await
                     .map_err(|e| Error::Plan(format!("tag_keys error: {}", e)))
             })
@@ -104,7 +104,7 @@ impl Planner {
         self.ctx
             .run(async move {
                 planner
-                    .tag_values(database.as_ref(), &tag_name, predicate)
+                    .tag_values(database, &tag_name, predicate)
                     .await
                     .map_err(|e| Error::Plan(format!("tag_values error: {}", e)))
             })
@@ -126,7 +126,7 @@ impl Planner {
         self.ctx
             .run(async move {
                 planner
-                    .field_columns(database.as_ref(), predicate)
+                    .field_columns(database, predicate)
                     .await
                     .map_err(|e| Error::Plan(format!("field_columns error: {}", e)))
             })

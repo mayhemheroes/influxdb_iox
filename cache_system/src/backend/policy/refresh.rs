@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::loader::Loader;
 
-use super::{CallbackHandle, ChangeRequest, Subscriber};
+use super::{CacheBackend, CallbackHandle, ChangeRequest, Subscriber};
 
 /// Interface to provide refresh duration for a key-value pair.
 pub trait RefreshDurationProvider: std::fmt::Debug + Send + Sync + 'static {
@@ -425,7 +425,7 @@ pub mod test_util {
                 .times
                 .lock()
                 .get(&(*k, v.clone()))
-                .expect("refresh time not mocked")
+                .unwrap_or_else(|| panic!("refresh time not mocked: K={k}, V={v}"))
         }
     }
 
@@ -536,7 +536,7 @@ pub mod test_util {
         use super::*;
 
         #[test]
-        #[should_panic(expected = "refresh time not mocked")]
+        #[should_panic(expected = "refresh time not mocked: K=1, V=foo")]
         fn test_provider_panic_not_mocked() {
             let provider = TestRefreshDurationProvider::default();
             provider.refresh_in(&1, &String::from("foo"));

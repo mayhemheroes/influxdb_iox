@@ -29,12 +29,16 @@ use crate::{
 #[derive(Debug, Snafu)]
 #[allow(missing_copy_implementations, missing_docs)]
 pub enum Error {
-    #[snafu(display("Error creating plan for querying Ingester data to send to Querier"))]
+    #[snafu(display(
+        "Error creating plan for querying Ingester data to send to Querier: {source}"
+    ))]
     FrontendError {
         source: iox_query::frontend::common::Error,
     },
 
-    #[snafu(display("Error building logical plan for querying Ingester data to send to Querier"))]
+    #[snafu(display(
+        "Error building logical plan for querying Ingester data to send to Querier: {source}"
+    ))]
     LogicalPlan { source: DataFusionError },
 
     #[snafu(display(
@@ -423,7 +427,7 @@ mod tests {
                 DataLocation::SNAPSHOT_PERSISTING,
                 DataLocation::PERSISTING,
             ] {
-                let scenario = Arc::new(make_ingester_data(two_partitions, loc));
+                let scenario = Arc::new(make_ingester_data(two_partitions, loc).await);
                 scenarios.push((loc, scenario));
             }
         }
