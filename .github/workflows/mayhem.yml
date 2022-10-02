@@ -28,6 +28,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      - run: |
+          sudo swapon -s
+          free -m
+          df -h
+          sudo fallocate -l 8G /swapfile
+          ls -lh /swapfile
+          sudo chmod 600 /swapfile
+          ls -lh /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo swapon -s
+          free -m
+
       - name: Build and push Docker image
         uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
         with:
